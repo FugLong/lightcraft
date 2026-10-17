@@ -614,6 +614,19 @@ mod tests {
         for pr in builtin() {
             assert!(ids.insert(pr.id.clone()));
             let out = pr.apply(&base, 1.0);
+            if pr.id == "lc.nc-neutral" {
+                // Neutral is the reset. On a default frame it is already there, so check that it
+                // clears a look that moved the print.
+                let mut warmed = base.clone();
+                warmed.film.temp = 20.0;
+                warmed.film.shoulder = 0.85;
+                warmed.film.black = 0.025;
+                let cleared = pr.apply(&warmed, 1.0);
+                assert_eq!(cleared.film.temp, 0.0);
+                assert_eq!(cleared.film.shoulder, 0.0);
+                assert_eq!(cleared.film.black, 0.0);
+                continue;
+            }
             assert_ne!(out, base, "{} had no effect", pr.id);
         }
     }

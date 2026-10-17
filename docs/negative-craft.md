@@ -12,7 +12,10 @@ already a positive.
 
 ## Using it
 
-- **App:** in Edit, open **Negative Craft**. Pick **Color Neg** or **B&W**, then **Convert**.
+- **App:** **Window ▸ Edit Sections ▸ Negative Craft** shows the section above **Light**. It stays
+  hidden until then, and the menu item stays checked. Right-click the header and choose **Hide
+  Negative Craft** to put it away. A photo that is already converted still shows the section.
+  Pick **Color Neg** or **B&W**, then **Convert**.
   The mask swatch is the blank film. **Auto** measures again. **Border** picks the blank film
   when the border is wrong, including a pale or near-white rebate after camera white balance.
   A blown-out lamp is refused. **Gray** (color only)

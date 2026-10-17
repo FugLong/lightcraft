@@ -664,6 +664,9 @@ pub struct UiState {
     pub thumb_size: f32,
     /// Open Edit sections by id.
     pub open_sections: Vec<String>,
+    /// Negative Craft is in the Edit panel, above Light. Off until Window ▸ Edit Sections ▸
+    /// Negative Craft. A photo whose conversion is already on shows the section either way.
+    pub negative_craft: bool,
     /// Open flyouts (curve, mixer, grading…).
     pub open_flyouts: Vec<String>,
     /// Solo Mode (`view.soloSections`): opening one Edit section closes the others.
@@ -1291,6 +1294,7 @@ impl Default for UiState {
             before_after: BeforeAfter::Off,
             thumb_size: 220.0,
             open_sections: vec!["light".into()],
+            negative_craft: false,
             open_flyouts: vec![],
             single_panel: false,
             show_clipping: false,

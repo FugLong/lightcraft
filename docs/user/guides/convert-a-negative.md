@@ -4,7 +4,7 @@ description: Turn a color or black-and-white negative into a positive from the b
 order: 35
 ---
 
-Leave a strip of blank film in the scan. Open the photo in **Edit**, then click **Convert** in **Negative Craft**. LightCraft prints the picture from that blank film.
+Leave a strip of blank film in the scan. Open the photo in **Edit**, turn on **Negative Craft**, then click **Convert**. LightCraft prints the picture from that blank film.
 
 ## Before you scan
 
@@ -16,13 +16,14 @@ Leave a strip of blank film in the scan. Open the photo in **Edit**, then click 
 ## Steps
 
 1. Double-click the photo and press `E` to open **Edit**.
-2. Open **Negative Craft**. Choose **Color Neg** or **B&W**.
-3. Click **Convert**. The swatch is the blank film LightCraft measured. When the edge has no blank film, LightCraft says so and keeps the previous border.
-4. If the swatch is wrong, click **Border**, then click the blank film. A pale border works. A border the highlight warning marked is clipped: scan that frame again with less exposure.
-5. Under **Crop**, click **Auto**. If the edge is wrong, click **Adjust** and drag the crop.
-6. On a color negative, click **Gray** and click a tone that should print gray when one tone is still off.
-7. Leave **Contrast** at **1** for the first print. Then set **Exposure** and **Blacks**. On a color negative, use **Temp** and **Tint**, then the shadow, midtone and highlight pairs, to finish the color. **Skin**, **Foliage** and **Sky** move those hues after the gray is right. A black-and-white negative finishes with **Exposure**, **Contrast** and **Blacks**.
-8. On a color negative, under **Look**, choose **Neutral**, **Warm**, **Cool**, **Paper** or **Cinematic**. A look changes the color and the paper. It leaves the border, the gray, the exposure and the contrast alone.
+2. Open **Window**, then **Edit Sections**, then **Negative Craft**. The section appears above **Light** and stays there on later photos. Right-click the **Negative Craft** header and choose **Hide Negative Craft** to put it away.
+3. Choose **Color Neg** or **B&W**.
+4. Click **Convert**. The swatch is the blank film LightCraft measured. When the edge has no blank film, LightCraft says so and keeps the previous border.
+5. If the swatch is wrong, click **Border**, then click the blank film. A pale border works. A border the highlight warning marked is clipped: scan that frame again with less exposure.
+6. Under **Crop**, click **Auto**. If the edge is wrong, click **Adjust** and drag the crop.
+7. On a color negative, click **Gray** and click a tone that should print gray when one tone is still off.
+8. Leave **Contrast** at **1** for the first print. Then set **Exposure** and **Blacks**. On a color negative, use **Temp** and **Tint**, then the shadow, midtone and highlight pairs, to finish the color. **Skin**, **Foliage** and **Sky** move those hues after the gray is right. A black-and-white negative finishes with **Exposure**, **Contrast** and **Blacks**.
+9. On a color negative, under **Look**, choose **Neutral**, **Warm**, **Cool**, **Paper** or **Cinematic**. A look changes the color and the paper. It leaves the border, the gray, the exposure and the contrast alone.
 
 ## Scan and paper
 

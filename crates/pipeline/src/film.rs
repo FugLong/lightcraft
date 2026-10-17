@@ -74,11 +74,7 @@ impl FilmKernel {
             slope: (2.0f64).powf(f.exposure).clamp(1e-3, 64.0) as f32,
             // A negative stores its film gamma here (γ = FILM_GAMMA / grade). A slide stores grade
             // and raises the positive to that power. `film_k` branches on the negative flag.
-            power: if f.stock.negative() {
-                (FILM_GAMMA / f.grade.clamp(0.2, 6.0)) as f32
-            } else {
-                f.grade.clamp(0.05, 6.0) as f32
-            },
+            power: if f.stock.negative() { (FILM_GAMMA / f.grade.clamp(0.2, 6.0)) as f32 } else { f.grade.clamp(0.05, 6.0) as f32 },
             offset: f.black.clamp(-0.5, 1.0) as f32,
             shoulder: f.shoulder.max(0.0) as f32,
             fog,
@@ -525,7 +521,9 @@ pub fn analyze_image(img: &Rgb32f, film: &Film) -> Analysis {
             film.frame = frame;
             None
         }
-        None => Some("No blank film found around this picture. Include the rebate in the scan, or click Border on film that is in the frame.".to_string()),
+        None => {
+            Some("No blank film found around this picture. Include the rebate in the scan, or click Border on film that is in the frame.".to_string())
+        }
     };
     let stats = measure(img, &film);
     film.set_base(stats.base);
@@ -1350,8 +1348,7 @@ fn place_negative(
     locked: Option<([f64; 3], [f64; 3])>,
 ) -> Placement {
     let grade = if grade.is_finite() { grade.clamp(0.2, 6.0) } else { 1.0 };
-    let identity =
-        Placement { d_lo: 0.0, d_hi: 1.0, fog: [0.0; 3], axis: [1.0; 3], white: [1.0; 3], grade, exposure: 0.0, mid_a: 0.0, mid_b: 0.0 };
+    let identity = Placement { d_lo: 0.0, d_hi: 1.0, fog: [0.0; 3], axis: [1.0; 3], white: [1.0; 3], grade, exposure: 0.0, mid_a: 0.0, mid_b: 0.0 };
     if interior.len() < 8 {
         return identity;
     }
@@ -2359,10 +2356,7 @@ mod tests {
         use lightcraft_raw::ColorData;
         let tags = ColorData {
             illuminant: [21, 0],
-            color_matrix: [
-                Some(lightcraft_color::Mat3([[0.64, -0.12, -0.02], [-0.32, 1.18, 0.10], [-0.04, 0.16, 0.72]])),
-                None,
-            ],
+            color_matrix: [Some(lightcraft_color::Mat3([[0.64, -0.12, -0.02], [-0.32, 1.18, 0.10], [-0.04, 0.16, 0.72]])), None],
             ..ColorData::default()
         };
         let info = crate::SourceInfo {

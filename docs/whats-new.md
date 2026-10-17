@@ -3,7 +3,8 @@
 ## 2026-10-17
 
 ### Negative Craft
-- **Negative Craft**, in the Edit panel, converts a colour negative or a black-and-white negative.
+- **Negative Craft**, above Light in the Edit panel, converts a colour negative or a black-and-white negative.
+  It stays hidden until **Window ▸ Edit Sections ▸ Negative Craft**. A photo that is already converted still shows it.
   **Convert** finds the blank film around the picture and prints it through the film's own curve, with
   highlight detail left for the tone curve. The scan needs that blank film in the frame, bright and not
   clipped. A gray axis takes out a cast that runs through the whole frame, and **Gray** sets that axis

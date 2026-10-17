@@ -1,5 +1,7 @@
-//! The Edit panel: histogram, Auto/B&W, profile, and the Light / Color / Effects / Detail / Optics
-//! sections, built from the engine's control specs.
+//! The Edit panel: histogram, Auto/B&W, profile, then the Light / Color / Effects / Detail / Optics
+//! sections. Negative Craft sits above Light, matching the film stage, and is drawn only after
+//! Window ▸ Edit Sections ▸ Negative Craft, or when this photo is already converted. The sliders
+//! come from the engine's control specs.
 
 use egui::epaint::{Mesh, Vertex};
 use egui::{Align2, Color32, Pos2, Rect, RichText, Sense, Stroke, pos2, vec2};
@@ -205,7 +207,9 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
     }
     divider(ui);
 
-    film_section(app, ui, id, &d);
+    if app.ui.negative_craft || d.film.enabled {
+        film_section(app, ui, id, &d);
+    }
     section(app, ui, &d, "light", "Light", |app, ui, d| {
         hdr_row(app, ui, d);
         for c in ["light.exposure", "light.contrast", "light.highlights", "light.shadows", "light.whites", "light.blacks"] {
@@ -552,7 +556,11 @@ fn film_section(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId, d: &Dev
                     film_show(app, ui, result);
                 }
                 ui.add_space(10.0);
-                ui.label(RichText::new(crate::i18n::tr("Leave the blank film in the scan. Convert prints from that border.")).font(t.font(12.0)).color(t.text_dim));
+                ui.label(
+                    RichText::new(crate::i18n::tr("Leave the blank film in the scan. Convert prints from that border."))
+                        .font(t.font(12.0))
+                        .color(t.text_dim),
+                );
             }
         });
         if d.film.enabled {
@@ -900,6 +908,15 @@ fn section(
                 app.toast(ui.ctx(), e);
             }
             ui.close();
+        }
+        if id == "film" && app.ui.negative_craft {
+            let hide = ui.button(crate::i18n::tr("Hide Negative Craft"));
+            register(ui.ctx(), "sectionMenu:hideFilm", hide.rect);
+            if hide.clicked() {
+                app.ui.negative_craft = false;
+                app.ui.open_sections.retain(|s| s != id);
+                ui.close();
+            }
         }
     });
     if open {
