@@ -877,3 +877,32 @@ fn windows_of_a_big_photo_share_one_uploaded_source() {
     lightcraft_gpu::render(&src, &info, &s, &at(1000), Some(&after)).expect("gpu render");
     assert_eq!(lightcraft_gpu::source_uploads() - start, 2);
 }
+
+#[test]
+fn negative_craft_matches_the_cpu() {
+    if !gpu() {
+        return;
+    }
+    let mut data = Vec::with_capacity(96 * 64);
+    for y in 0..64 {
+        for x in 0..96 {
+            let border = x < 8 || y < 8 || x >= 88 || y >= 56;
+            data.push(if border { [0.85f32, 0.42, 0.15] } else { [0.35, 0.22, 0.12] });
+        }
+    }
+    let src = Arc::new(Rgb32f { width: 96, height: 64, data });
+    let s = DevelopSettings {
+        film: lightcraft_develop::Film {
+            enabled: true,
+            base_r: 0.85,
+            base_g: 0.42,
+            base_b: 0.15,
+            grade: 1.1,
+            exposure: 0.25,
+            temp: 12.0,
+            ..Default::default()
+        },
+        ..DevelopSettings::default()
+    };
+    check("negative craft", &src, &SourceInfo::default(), &s, &RenderRequest::fit(96, 64));
+}

@@ -1,6 +1,6 @@
 # Lightroom parity checklist
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-14 · **Change:** minor (integration batch 36: slideshow module, print-ready PDF fixes, local adjustment presets, Layout Image loupe overlay, Delete in an album removes from it, new languages Czech, Polish, Italian-ready catalogs; many rows' notes updated by their PRs) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
+> **Last reviewed:** 2026-10-17 · **Last updated:** 2026-10-17 · **Change:** patch (Negative Craft accepts a pale or white-balanced film rebate as the base) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
 
 The measured, row-by-row checklist: one row per Lightroom feature, menu item and shortcut, what we
 have and what is missing. It answers *does the feature exist?* (feature breadth). Whether it is good
@@ -53,9 +53,10 @@ cited here still exists. Formerly docs/parity.md.
 | Y. Menus | 84 | 0 | 4 | 8 | 47/47 (100%) | 23/23 (100%) |
 | Z. Keyboard shortcuts (desktop) | 78 | 4 | 2 | 1 | 49/52 (94%) | 24/26 (92%) |
 | Lightroom Classic extras | 40 | 23 | 23 | 8 | — | 24/26 (92%) |
-| **Total** | 419 | 61 | 59 | 35 | 194/201 (97%) | 148/161 (92%) |
+| Negative Craft | 7 | 0 | 0 | 0 | — | — |
+| **Total** | 426 | 61 | 59 | 35 | 194/201 (97%) | 148/161 (92%) |
 
-Weighted completion (✅ = 1, 🟡 = ½, 🚫 left out): **83.4%** of 539 in-scope rows — P0 98.3% of 201 · P1 95.0% of 161 · P2 55.7% of 176.
+Weighted completion (✅ = 1, 🟡 = ½, 🚫 left out): **83.6%** of 546 in-scope rows — P0 98.3% of 201 · P1 95.0% of 161 · P2 57.4% of 183.
 <!-- /parity:summary -->
 
 ## Top gaps and shortcut notes
@@ -793,10 +794,29 @@ Mincho faces (BIZ UDMincho; on the web build, BIZ UDPGothic) when built with `CR
 Latin stays upright. Advanced Japanese composition remains open. Regression coverage:
 `export::tests::japanese_watermarks_support_vertical_columns`, `japanese_watermark_options_and_legacy_defaults`, `watermarks_work_without_craft_fonts`.
 
+## Negative Craft
+
+| Id | Feature | Tier | Status | Evidence | Notes |
+|---|---|---|---|---|---|
+| LR-FILM-CONVERT | Negative Craft convert | P2 | ✅ | `cmd:film.analyze`, `cmd:film.setEnabled`, `crates/pipeline/src/film.rs`, `docs/negative-craft.md` | scene-linear transmission before white balance, in camera RGB when the file has a colour matrix; mask prints black; density inverts through the film gamma with highlight headroom |
+| LR-FILM-FRAME | Analysis frame | P2 | ✅ | `cmd:film.setFrame`, `cmd:film.analyze`, `cmd:film.cropToImage` | quad fit to the rebate; a miss keeps the previous quad and reports `frameError`; Crop ▸ Auto crops to the picture, including inside sprocket holes, and does not reprint |
+| LR-FILM-PICK | Base and neutral picks | P2 | ✅ | `cmd:film.pickBase`, `cmd:film.pickShadow`, `cmd:film.pickHighlight`, `cmd:film.pickGray` | a pale or white-balanced rebate is a valid base; a clipped lamp is refused; a gray click sets the axis and does not refit it; two neutrals set per-channel contrast |
+| LR-FILM-ROLL | Roll analysis | P2 | ✅ | `cmd:film.analyzeRoll` | shared mask color and gray axis; each frame's exposure is placed again with that axis; drift warning past half a stop |
+| LR-FILM-CONTROLS | Paper and cast | P2 | ✅ | `ctl:film.exposure`, `ctl:film.grade`, `ctl:film.black`, `ctl:film.shoulder`, `ctl:film.presat`, `ctl:film.temp`, `ctl:film.tint`, `ctl:film.shadowTemp`, `ctl:film.midTemp`, `ctl:film.highTemp`, `ctl:film.skin`, `ctl:film.foliage`, `ctl:film.sky` | shadow, mid, and highlight balance reach about 0.40 density; hue bands are zero on a neutral |
+| LR-FILM-STOCKS | Slides and black-and-white | P2 | ✅ | `cmd:film.setStock`, `cmd:film.setIntent`, `cmd:film.inspect` | color and black-and-white negatives and slides; Stock leaves a dominant color alone |
+| LR-FILM-COLOR | Scan and print balance | P2 | ✅ | `cmd:film.setScan`, `cmd:film.setPrint`, `crates/pipeline/src/film.rs` | gray axis removes a cast whose sign holds through the scale; Camera, Minilab, and Flat set the dye correction; Neutral, Portrait, Vivid, and Lab are the paper |
+
 ## Revision history
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-17 | patch | LR-FILM-PICK, LR-FILM-FRAME: a pale or white-balanced rebate is a valid film base; only a clipped lamp is refused (status unchanged, ✅) |
+| 2026-10-17 | patch | LR-FILM-CONVERT, LR-FILM-COLOR, LR-FILM-ROLL: film-gamma inversion with highlight headroom, Hanson dye inverse, robust gray axis, camera-space measurement on raw (status unchanged, ✅) |
+| 2026-10-17 | patch | LR-FILM-FRAME: **To the picture** crops the scan to the measured edge (`film.cropToImage`; status unchanged, ✅) |
+| 2026-10-17 | minor | LR-FILM-COLOR, LR-FILM-PICK, LR-FILM-ROLL, LR-FILM-CONTROLS: gray axis, gray dropper, stronger band balance, and skin / foliage / sky (status unchanged, ✅) |
+| 2026-10-16 | minor | LR-FILM-COLOR: printer balance, scan (camera / minilab / flat), and print (neutral / portrait / vivid / lab) (new, ✅) |
+| 2026-10-16 | patch | LR-FILM-CONTROLS: Negative Craft looks no longer replace exposure or contrast (status unchanged, ✅) |
+| 2026-10-16 | minor | LR-FILM-CONVERT, LR-FILM-FRAME, LR-FILM-PICK, LR-FILM-ROLL, LR-FILM-CONTROLS, LR-FILM-STOCKS: Negative Craft, a scene-linear film stage (new, ✅) |
 | 2026-10-12 | minor | LR-EDIT-OPTICS-PROFILE: Sony ARW shading, CA and distortion tables decoded with settings and provenance (raw IFD, `SR2SubIFD` fallback); applied corrections unchanged (ILCE-7RM4A and ILCE-7RM6 distortion); status unchanged (🟡) |
 | 2026-10-14 | minor | LR-IMP-CAMERA-COVERAGE: Camera-coverage sweep (#1327): 30 models verified on 40 CC0 files (coverage.py 515 → 545 verified); sensor verification does not establish colour parity (#1277); status unchanged (🟡) |
 | 2026-10-13 | minor | LR-MERGE-PANO: a panorama's DNG takes its `AsShotNeutral` from the median of its frames' vendor white-balance multipliers (CR2, NEF, ARW…) instead of the first frame's tags, and frames now carry the multipliers (issue #1144); status unchanged (✅) |

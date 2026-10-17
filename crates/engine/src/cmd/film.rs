@@ -1,0 +1,419 @@
+//! Negative Craft commands. Analysis reads a thumbnail; the conversion itself is the film stage.
+
+use lightcraft_catalog::PhotoId;
+use lightcraft_develop::{DevelopSettings, Film, FilmCapture, FilmFrame, FilmIntent, FilmPrint, FilmScan, FilmStock};
+use lightcraft_pipeline::film::{self, DRIFT_WARN};
+use serde_json::{Value, json};
+
+use super::{CommandSpec, bad, cmd, f64_req, has_active, has_selection, ok};
+use crate::{Result, Session, media::SourceLevel};
+
+/// Source changes (stock, intent, scan gamma) are remeasured when conversion is already on,
+/// so the print follows the new choice. The color look is left as it was.
+fn commit_measured(s: &mut Session, id: PhotoId, d: DevelopSettings, label: &str, cmd: &str) -> Result<Value> {
+    let on = d.film.enabled;
+    commit(s, id, d, label)?;
+    if on { run_analyze(s, id, cmd) } else { ok() }
+}
+
+/// The thumbnail in the space density is measured in: camera RGB when the file has its own
+/// matrix, otherwise the working image.
+fn scanner_image(s: &mut Session, id: PhotoId, cmd: &str) -> Result<lightcraft_raster::Rgb32f> {
+    let src = s.source_now(id, SourceLevel::Thumb).map_err(|e| bad(cmd, e))?;
+    let d = s.develop_of(id).unwrap_or_default();
+    let mut img = oriented(&src, &d);
+    if let Some(space) = film::scanner_space(&s.source_info(id)) {
+        film::apply_matrix(&mut img, &space.to_camera);
+    }
+    Ok(img)
+}
+
+fn run_analyze(s: &mut Session, id: PhotoId, cmd: &str) -> Result<Value> {
+    let img = scanner_image(s, id, cmd)?;
+    let d = s.develop_of(id).unwrap_or_default();
+    let analysis = film::analyze_image(&img, &d.film);
+    let out = stats_json(&analysis.stats, analysis.frame_error.as_deref());
+    let mut d = (*d).clone();
+    d.film = analysis.film;
+    commit(s, id, d, "Negative Craft")?;
+    Ok(out)
+}
+
+fn active(s: &Session, c: &str) -> Result<PhotoId> {
+    s.active().ok_or_else(|| bad(c, "no active photo"))
+}
+
+fn commit(s: &mut Session, id: PhotoId, d: DevelopSettings, label: &str) -> Result<()> {
+    s.set_develop(id, d, label)
+}
+
+fn oriented(src: &std::sync::Arc<lightcraft_raster::Rgb32f>, d: &DevelopSettings) -> lightcraft_raster::Rgb32f {
+    src.oriented(d.orientation)
+}
+
+fn stats_json(stats: &film::FrameStats, frame_error: Option<&str>) -> Value {
+    let mut v = json!({
+        "base": stats.base,
+        "gamma": stats.gamma,
+        "exposure": stats.exposure,
+        "rebateLevel": stats.rebate_level,
+        "dominant": stats.dominant,
+        "rebateBlack": stats.rebate_black,
+        "bins": stats.bins,
+    });
+    if let Some(err) = frame_error
+        && let Some(obj) = v.as_object_mut()
+    {
+        obj.insert("frameError".into(), json!(err));
+    }
+    v
+}
+
+pub fn specs() -> Vec<CommandSpec> {
+    vec![
+        cmd!("film.analyze", "Analyze Negative", ["Photo"], None, "{} — find the film border and print this photo", has_active, |s, _| {
+            let id = active(s, "film.analyze")?;
+            run_analyze(s, id, "film.analyze")
+        }),
+        cmd!(
+            "film.analyzeRoll",
+            "Analyze Roll",
+            ["Photo"],
+            None,
+            "{} — share mask color and the gray axis; each frame is exposed again so its brightness holds",
+            has_selection,
+            |s, _| {
+                let ids = s.selected();
+                if ids.is_empty() {
+                    return Err(bad("film.analyzeRoll", "no photos selected"));
+                }
+                let intent = s.active().and_then(|id| s.develop_of(id)).map(|d| d.film.intent).unwrap_or_default();
+                let mut prepared = Vec::new();
+                for id in &ids {
+                    let img = scanner_image(s, *id, "film.analyzeRoll")?;
+                    let d = s.develop_of(*id).unwrap_or_default();
+                    let mut film = d.film.clone();
+                    film.intent = intent;
+                    let analysis = film::analyze_image(&img, &film);
+                    prepared.push((*id, analysis));
+                }
+                let stats: Vec<_> = prepared.iter().map(|(_, a)| a.stats.clone()).collect();
+                let shared = film::share_roll(&stats);
+                let mut warnings = Vec::new();
+                for ((id, analysis), share) in prepared.iter().zip(&shared) {
+                    let mut d = s.develop_of(*id).unwrap_or_default().as_ref().clone();
+                    d.film = analysis.film.clone();
+                    d.film.set_base(share.base);
+                    d.film.set_gamma(share.gamma);
+                    d.film.set_fog(share.fog);
+                    d.film.set_axis(share.axis);
+                    let img = scanner_image(s, *id, "film.analyzeRoll")?;
+                    let placed = film::place_keeping_axis(&img, &d.film);
+                    d.film.d_lo = placed.d_lo;
+                    d.film.d_hi = placed.d_hi;
+                    d.film.set_white(placed.white);
+                    d.film.mid_a = placed.mid_a;
+                    d.film.mid_b = placed.mid_b;
+                    d.film.grade = placed.grade;
+                    // The shared axis changes the densities. Exposure is solved again with it,
+                    // per frame, so the gray correction does not also move the midtone.
+                    d.film.exposure = placed.exposure;
+                    d.film.intent = intent;
+                    d.film.enabled = true;
+                    commit(s, *id, d, "Negative Craft Roll")?;
+                    if share.drift.abs() > DRIFT_WARN {
+                        warnings.push(json!({"id": id.0, "stops": share.drift}));
+                    }
+                }
+                Ok(json!({"frames": ids.len(), "warnings": warnings}))
+            }
+        ),
+        cmd!(
+            query "film.inspect",
+            "Inspect Negative",
+            [],
+            None,
+            "{} — density histogram and rebate readout, without changing settings",
+            has_active,
+            |s, _| {
+                let id = active(s, "film.inspect")?;
+                let img = scanner_image(s, id, "film.inspect")?;
+                let d = s.develop_of(id).unwrap_or_default();
+                Ok(stats_json(&film::inspect(&img, &d.film), None))
+            }
+        ),
+        cmd!("film.setEnabled", "Negative Craft On", [], None, "{enabled: bool}", has_active, |s, p| {
+            let on = p.get("enabled").and_then(Value::as_bool).ok_or_else(|| bad("film.setEnabled", "missing enabled"))?;
+            let id = active(s, "film.setEnabled")?;
+            if !on {
+                let mut d = s.develop_of(id).unwrap_or_default().as_ref().clone();
+                d.film.enabled = false;
+                commit(s, id, d, "Negative Craft")?;
+                return ok();
+            }
+            // Turning conversion on measures the film border. A photo that cannot be read still
+            // switches on, so the checkbox matches the click.
+            match run_analyze(s, id, "film.setEnabled") {
+                Ok(v) => Ok(v),
+                Err(e) => {
+                    let mut d = s.develop_of(id).unwrap_or_default().as_ref().clone();
+                    d.film.enabled = true;
+                    commit(s, id, d, "Negative Craft")?;
+                    Err(e)
+                }
+            }
+        }),
+        cmd!("film.setStock", "Film Stock", [], None, "{stock: colorNeg|bwNeg|colorPos|bwPos}", has_active, |s, p| {
+            let stock: FilmStock =
+                serde_json::from_value(p.get("stock").cloned().unwrap_or(Value::Null)).map_err(|e| bad("film.setStock", e.to_string()))?;
+            let id = active(s, "film.setStock")?;
+            let mut d = s.develop_of(id).unwrap_or_default().as_ref().clone();
+            d.film.stock = stock;
+            commit_measured(s, id, d, "Film Stock", "film.setStock")
+        }),
+        cmd!("film.setIntent", "Analysis Intent", [], None, "{intent: stock|scene}", has_active, |s, p| {
+            let intent: FilmIntent =
+                serde_json::from_value(p.get("intent").cloned().unwrap_or(Value::Null)).map_err(|e| bad("film.setIntent", e.to_string()))?;
+            let id = active(s, "film.setIntent")?;
+            let mut d = s.develop_of(id).unwrap_or_default().as_ref().clone();
+            d.film.intent = intent;
+            commit_measured(s, id, d, "Analysis Intent", "film.setIntent")
+        }),
+        cmd!("film.setScan", "Film Scan", [], None, "{scan: camera|minilab|flat}", has_active, |s, p| {
+            let scan: FilmScan =
+                serde_json::from_value(p.get("scan").cloned().unwrap_or(Value::Null)).map_err(|e| bad("film.setScan", e.to_string()))?;
+            let id = active(s, "film.setScan")?;
+            let mut d = s.develop_of(id).unwrap_or_default().as_ref().clone();
+            d.film.scan = scan;
+            commit_measured(s, id, d, "Film Scan", "film.setScan")
+        }),
+        cmd!("film.setPrint", "Film Print", [], None, "{print: neutral|portrait|vivid|lab}", has_active, |s, p| {
+            let print: FilmPrint =
+                serde_json::from_value(p.get("print").cloned().unwrap_or(Value::Null)).map_err(|e| bad("film.setPrint", e.to_string()))?;
+            let id = active(s, "film.setPrint")?;
+            let mut d = s.develop_of(id).unwrap_or_default().as_ref().clone();
+            d.film.print = print;
+            commit(s, id, d, "Film Print")?;
+            ok()
+        }),
+        cmd!("film.setCapture", "Scan Encoding", [], None, "{capture: linear|gamma18|gamma22}", has_active, |s, p| {
+            let capture: FilmCapture =
+                serde_json::from_value(p.get("capture").cloned().unwrap_or(Value::Null)).map_err(|e| bad("film.setCapture", e.to_string()))?;
+            let id = active(s, "film.setCapture")?;
+            let mut d = s.develop_of(id).unwrap_or_default().as_ref().clone();
+            d.film.capture = capture;
+            commit_measured(s, id, d, "Scan Encoding", "film.setCapture")
+        }),
+        cmd!("film.pickBase", "Pick Film Base", [], None, "{x, y} normalized coordinates on the clear film", has_active, |s, p| {
+            pick(s, p, "film.pickBase", Pick::Base)
+        }),
+        cmd!("film.pickGray", "Pick Gray", [], None, "{x, y} normalized coordinates of something that should be gray", has_active, |s, p| {
+            pick(s, p, "film.pickGray", Pick::Gray)
+        }),
+        cmd!("film.pickShadow", "Pick Shadow Neutral", [], None, "{x, y} normalized coordinates of a dark neutral", has_active, |s, p| {
+            pick(s, p, "film.pickShadow", Pick::Shadow)
+        }),
+        cmd!("film.pickHighlight", "Pick Highlight Neutral", [], None, "{x, y} normalized coordinates of a light neutral", has_active, |s, p| {
+            pick(s, p, "film.pickHighlight", Pick::Highlight)
+        }),
+        cmd!("film.setFrame", "Set Film Frame", [], None, "{corners: [[x, y], [x, y], [x, y], [x, y]]} normalized", has_active, |s, p| {
+            let corners = corners_param(p)?;
+            let id = active(s, "film.setFrame")?;
+            let mut d = s.develop_of(id).unwrap_or_default().as_ref().clone();
+            d.film.frame = FilmFrame { corners };
+            commit(s, id, d, "Film Frame")?;
+            ok()
+        }),
+        cmd!("film.cropToImage", "Crop to the Picture", [], None, "{} — crop the scan to the picture edge Convert found", has_active, |s, _| {
+            let id = active(s, "film.cropToImage")?;
+            let img = scanner_image(s, id, "film.cropToImage")?;
+            let d0 = s.develop_of(id).unwrap_or_default();
+            let mut d = (*d0).clone();
+            // Measure again. An older quad can still contain the printing on the rebate.
+            if let Some(frame) = film::detect_gate(&img, d.film.stock).or_else(|| film::detect_frame(&img, d.film.stock)) {
+                d.film.frame = frame;
+            } else if d.film.frame.is_full() {
+                return Err(bad("film.cropToImage", "no film border found"));
+            }
+            let geo = film::crop_for_frame(&d.film.frame, img.width as f64, img.height as f64)
+                .ok_or_else(|| bad("film.cropToImage", "no film border found"))?;
+            d.crop.geometry = geo;
+            commit(s, id, d, "Crop")?;
+            ok()
+        }),
+    ]
+}
+
+enum Pick {
+    Base,
+    Shadow,
+    Highlight,
+    Gray,
+}
+
+fn pick(s: &mut Session, p: &Value, cmd: &str, which: Pick) -> Result<Value> {
+    let (x, y) = (f64_req(p, "x", cmd)?, f64_req(p, "y", cmd)?);
+    let id = active(s, cmd)?;
+    let img = scanner_image(s, id, cmd)?;
+    let d0 = s.develop_of(id).unwrap_or_default();
+    let sample = film::sample(&img, x, y).ok_or_else(|| bad(cmd, "the photo has no pixels"))?;
+    let mut d = (*d0).clone();
+    match which {
+        Pick::Base => {
+            if !film::accepts_border(d.film.stock, sample) {
+                return Err(bad(cmd, "that spot is blown out — click the blank film, not the white lamp"));
+            }
+            d.film.set_base(sample);
+            d.film.enabled = true;
+        }
+        Pick::Shadow => {
+            d.film.shadow_pick = Some(sample);
+            rebalance(&mut d.film);
+            d.film.enabled = true;
+        }
+        Pick::Highlight => {
+            d.film.highlight_pick = Some(sample);
+            rebalance(&mut d.film);
+            d.film.enabled = true;
+        }
+        Pick::Gray => {
+            let density = film::density_at(&img, x, y, &d.film);
+            let mut fog = d.film.fog();
+            let mut axis = d.film.axis();
+            let g = density[1].max(1e-3);
+            for c in [0usize, 2] {
+                let intercept = density[c] - axis[c] * g;
+                if intercept < 0.0 {
+                    axis[c] = (density[c] / g).clamp(0.25, 3.2);
+                    fog[c] = 0.0;
+                } else {
+                    fog[c] = intercept.clamp(0.0, 0.8);
+                }
+            }
+            fog[1] = 0.0;
+            axis[1] = 1.0;
+            d.film.set_fog(fog);
+            d.film.set_axis(axis);
+            d.film.enabled = true;
+        }
+    }
+    if d.film.stock.negative() {
+        let placed = if matches!(which, Pick::Gray) { film::place_keeping_axis(&img, &d.film) } else { film::place(&img, &d.film) };
+        d.film.d_lo = placed.d_lo;
+        d.film.d_hi = placed.d_hi;
+        d.film.set_fog(placed.fog);
+        d.film.set_axis(placed.axis);
+        d.film.set_white(placed.white);
+        d.film.mid_a = placed.mid_a;
+        d.film.mid_b = placed.mid_b;
+        d.film.grade = placed.grade;
+        d.film.exposure = placed.exposure;
+    }
+    let base = d.film.base();
+    let gamma = d.film.gamma();
+    commit(s, id, d, "Negative Craft Pick")?;
+    Ok(json!({"sample": sample, "base": base, "gamma": gamma}))
+}
+
+fn rebalance(film: &mut Film) {
+    let mut picks = Vec::new();
+    if let Some(p) = film.shadow_pick {
+        picks.push((p, 1.0));
+    }
+    if let Some(p) = film.highlight_pick {
+        picks.push((p, 1.0));
+    }
+    if !picks.is_empty() {
+        film.set_gamma(film::gamma_from_picks(film.base(), &picks, film.gamma_g));
+    }
+}
+
+fn corners_param(p: &Value) -> Result<[[f64; 2]; 4]> {
+    let arr = p.get("corners").and_then(Value::as_array).ok_or_else(|| bad("film.setFrame", "missing corners"))?;
+    if arr.len() != 4 {
+        return Err(bad("film.setFrame", "corners needs four points"));
+    }
+    let mut corners = [[0.0; 2]; 4];
+    for (i, c) in arr.iter().enumerate() {
+        let pair = c.as_array().ok_or_else(|| bad("film.setFrame", "a corner is not a pair"))?;
+        let x = pair.first().and_then(Value::as_f64).ok_or_else(|| bad("film.setFrame", "a corner needs x"))?;
+        let y = pair.get(1).and_then(Value::as_f64).ok_or_else(|| bad("film.setFrame", "a corner needs y"))?;
+        if !x.is_finite() || !y.is_finite() {
+            return Err(bad("film.setFrame", "a corner is not a finite number"));
+        }
+        if let Some(slot) = corners.get_mut(i) {
+            *slot = [x.clamp(-0.25, 1.25), y.clamp(-0.25, 1.25)];
+        }
+    }
+    Ok(corners)
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    #[test]
+    fn analyze_turns_conversion_on_and_a_bad_frame_is_refused() {
+        let mut s = crate::Session::with_demo();
+        let id = s.active().expect("demo photo");
+        let r = s.execute("film.analyze", &json!({})).expect("analyze");
+        assert!(r.get("base").is_some());
+        let film = s.develop_of(id).expect("settings").film.clone();
+        assert!(film.enabled);
+        assert!(s.execute("film.setFrame", &json!({"corners": [[0.0, 0.0]]})).is_err());
+        assert_eq!(s.develop_of(id).expect("settings").film.frame, film.frame);
+        let before = s.develop_of(id).expect("settings").film.exposure;
+        s.execute("film.setFrame", &json!({"corners": [[0.10, 0.15], [0.90, 0.15], [0.90, 0.85], [0.10, 0.85]]})).expect("frame");
+        s.execute("film.cropToImage", &json!({})).expect("crop");
+        let cropped = s.develop_of(id).expect("settings");
+        assert!((cropped.film.exposure - before).abs() < 1e-9, "cropping does not reprint");
+        let r = cropped.crop.geometry.rect;
+        assert!(r.x1 - r.x0 > 0.2 && r.y1 - r.y0 > 0.2, "crop collapsed {r:?}");
+        let placed = s.develop_of(id).expect("settings").film.clone();
+        s.execute("preset.apply", &json!({"id": "lc.nc-paper"})).expect("look");
+        let look = s.develop_of(id).expect("settings").film.clone();
+        assert!(look.enabled);
+        assert!(look.black > 0.0);
+        assert!((look.grade - placed.grade).abs() < 1e-9, "a look must not replace the print contrast");
+        assert!((look.exposure - placed.exposure).abs() < 1e-9, "a look must not replace the print exposure");
+        assert_eq!(look.base(), placed.base());
+        let roll = s.execute("film.analyzeRoll", &json!({})).expect("roll");
+        assert!(roll.get("frames").is_some());
+    }
+
+    #[test]
+    fn warm_is_amber_on_a_neutral_negative() {
+        use lightcraft_develop::Film;
+        use lightcraft_pipeline::film::FilmKernel;
+        let look = crate::presets::builtin().into_iter().find(|p| p.id == "lc.nc-warm").expect("warm look");
+        let spec = look.settings.get("film").and_then(|v| v.as_object()).expect("film keys");
+        let num = |k: &str| spec.get(k).and_then(|v| v.as_f64()).unwrap_or(0.0);
+        assert!(num("temp") > 0.0, "warmth is temperature");
+        assert!(num("tint") <= 0.0, "positive tint removes green");
+        assert!(num("high_tint") <= 0.0, "highlight tint was turning the warm look purple");
+        assert!(num("presat") <= 0.0, "presat is applied before the inversion and cools a negative");
+
+        let base = [0.80f64, 0.38, 0.14];
+        let pix = base.map(|v| (v * 10f64.powf(-0.45)) as f32);
+        let plain = {
+            let mut n = Film { enabled: true, ..Film::default() };
+            n.set_base(base);
+            FilmKernel::from_film(&n).apply(pix)
+        };
+        let mut warm = Film { enabled: true, ..Film::default() };
+        warm.set_base(base);
+        warm.presat = num("presat");
+        warm.temp = num("temp");
+        warm.tint = num("tint");
+        warm.shadow_temp = num("shadow_temp");
+        warm.shadow_tint = num("shadow_tint");
+        warm.mid_temp = num("mid_temp");
+        warm.mid_tint = num("mid_tint");
+        warm.high_temp = num("high_temp");
+        warm.high_tint = num("high_tint");
+        let printed = FilmKernel::from_film(&warm).apply(pix);
+        assert!(printed[0] > plain[0] * 1.05, "warm should add red {printed:?} vs {plain:?}");
+        assert!(printed[2] < plain[2] * 0.95, "warm should take out blue {printed:?} vs {plain:?}");
+        assert!(printed[1] >= plain[1] * 0.99, "warm should hold green {printed:?} vs {plain:?}");
+    }
+}

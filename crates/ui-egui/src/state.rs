@@ -812,8 +812,15 @@ pub struct UiState {
     /// the photo that applies to: not an edit, and forgotten on moving to another photo or quitting.
     #[serde(skip)]
     pub grading_hidden: Option<(lightcraft_catalog::PhotoId, [bool; 3])>,
-    /// Active on-canvas tool: "", "brush", "linear", "radial", "wbPicker", "straighten", "remove".
+    /// Active on-canvas tool: "", "brush", "linear", "radial", "wbPicker", "straighten", "remove",
+    /// "filmBase", "filmShadow", "filmHighlight", "filmGray".
     pub tool: String,
+    /// Corner of the Negative Craft frame under a drag, 0..4.
+    #[serde(skip)]
+    pub film_corner: Option<u8>,
+    /// Density histogram for the open Negative Craft panel: photo id, settings hash, bins, rebate level, dominant fraction.
+    #[serde(skip)]
+    pub film_meter: Option<(u64, u64, Vec<f32>, f64, f64)>,
     pub brush_size: f32,
     pub brush_feather: f32,
     pub brush_flow: f32,
@@ -1344,6 +1351,8 @@ impl Default for UiState {
             grading_mode: "3way".into(),
             grading_hidden: None,
             tool: String::new(),
+            film_corner: None,
+            film_meter: None,
             brush_size: 0.04,
             brush_feather: 50.0,
             brush_flow: 60.0,

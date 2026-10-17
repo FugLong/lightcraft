@@ -86,7 +86,7 @@ impl DevelopSettings {
     /// Calibration the pipeline switches off where it applies them. Borrowed when every section is on.
     pub fn effective(&self) -> std::borrow::Cow<'_, DevelopSettings> {
         let off = |section: &str| !self.section_enabled(section);
-        if !(off("light") || off("color") || off("detail")) {
+        if !(off("light") || off("color") || off("detail") || off("film")) {
             return std::borrow::Cow::Borrowed(self);
         }
         let mut d = self.clone();
@@ -102,6 +102,9 @@ impl DevelopSettings {
         }
         if off("detail") {
             d.reset_section(Section::Detail);
+        }
+        if off("film") {
+            d.reset_section(Section::Film);
         }
         std::borrow::Cow::Owned(d)
     }
@@ -132,6 +135,7 @@ impl DevelopSettings {
             }
             Section::Color => self.wb.mode = WbMode::AsShot,
             Section::Detail => self.enhance.denoise_on = None,
+            Section::Film => self.film = crate::Film::default(),
             _ => {}
         }
     }
@@ -227,6 +231,29 @@ mod tests {
         assert!(on.to_json().get("hdr").is_some());
         assert_ne!(on.hash64(), s.hash64());
         assert_eq!(DevelopSettings::from_json(&on.to_json()).unwrap(), on);
+    }
+
+    #[test]
+    fn default_film_is_not_serialized_so_existing_hashes_stay() {
+        let s = DevelopSettings::default();
+        assert!(s.to_json().get("film").is_none(), "Negative Craft off must not change the settings JSON or hash64");
+        let mut on = s.clone();
+        on.film.enabled = true;
+        assert!(on.to_json().get("film").is_some());
+        assert_ne!(on.hash64(), s.hash64());
+        assert_eq!(DevelopSettings::from_json(&on.to_json()).unwrap(), on);
+    }
+
+    #[test]
+    fn a_missing_axis_in_an_old_catalog_is_one_not_zero() {
+        let s = DevelopSettings::from_json(&json!({"film": {"enabled": true, "fog_r": 0.12}})).unwrap();
+        assert!(s.film.enabled);
+        assert!((s.film.fog_r - 0.12).abs() < 1e-12);
+        assert_eq!(s.film.axis(), [1.0, 1.0, 1.0]);
+        assert!(s.to_json().get("film").is_some());
+        let bare = DevelopSettings::from_json(&json!({})).unwrap();
+        assert!(bare.film.is_default());
+        assert!(bare.to_json().get("film").is_none());
     }
 
     #[test]

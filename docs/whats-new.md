@@ -1,5 +1,16 @@
 # What's new in LightCraft
 
+## 2026-10-17
+
+### Negative Craft
+- **Negative Craft**, in the Edit panel, converts a colour negative or a black-and-white negative.
+  **Convert** finds the blank film around the picture and prints it through the film's own curve, with
+  highlight detail left for the tone curve. The scan needs that blank film in the frame, bright and not
+  clipped. A gray axis takes out a cast that runs through the whole frame, and **Gray** sets that axis
+  from one tone that should print gray. A raw scan is balanced in the camera's own colour, before the
+  working-space conversion. **Skin**, **Foliage**, and **Sky** shift those hues once the gray is right.
+  How to scan and convert is in `docs/user/guides/convert-a-negative.md`.
+
 ## 2026-10-14
 
 ### Lightroom radial masks on the right side
