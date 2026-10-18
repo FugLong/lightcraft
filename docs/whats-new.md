@@ -10,6 +10,9 @@
   clipped. A gray axis takes out a cast that runs through the whole frame, and **Gray** sets that axis
   from one tone that should print gray. A raw scan is balanced in the camera's own colour, before the
   working-space conversion. How to scan and convert is in `docs/user/guides/convert-a-negative.md`.
+- The catalog format is now version 10 (`DevelopSettings.film`). A converted photo writes those settings
+  into the library. Once this version has opened a library, older builds refuse it instead of loading the
+  photo and dropping the conversion. A photo that was never converted still omits the field.
 
 ## 2026-10-14
 
