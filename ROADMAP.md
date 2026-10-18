@@ -114,8 +114,9 @@ Ranked toward beta; detail in [docs/roadmap.md](docs/roadmap.md), gaps in [docs/
 
 ## Progress log
 
+- 2026-10-17: Negative Craft cleanup: Skin, Foliage, and Sky removed. Headline numbers unchanged.
 - 2026-10-17: Negative Craft converts a colour negative, a black-and-white negative, or a slide, through the film gamma with highlight headroom
-  (Convert, a gray axis, Gray, and skin / foliage / sky). Headline numbers unchanged.
+  (Convert, a gray axis, and Gray). Headline numbers unchanged.
 - 2026-10-14: Camera-coverage sweep verifies 30 more models on 40 CC0 files, with file and sensor
   hashes pinned (`docs/raw/coverage.py`: 515 → 545 verified). Eleven candidates excluded after rechecking
   identity, provenance and camera-image agreement. Phone and drone DNG tone differences remain tracked in #1277.

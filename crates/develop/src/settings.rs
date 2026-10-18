@@ -1424,10 +1424,6 @@ pub struct Film {
     /// OkLab is not used here. These are CIE a* and b* of the printed midtone, written by Auto.
     pub mid_a: f64,
     pub mid_b: f64,
-    /// Hue trims after the gray axis. Zero leaves that hue alone. They do not move a neutral.
-    pub skin: f64,
-    pub foliage: f64,
-    pub sky: f64,
     /// Per-channel density that prints white. All zero means "use `d_hi` for every channel".
     pub white_r: f64,
     pub white_g: f64,
@@ -1479,9 +1475,6 @@ impl Default for Film {
             axis_b: 1.0,
             mid_a: 0.0,
             mid_b: 0.0,
-            skin: 0.0,
-            foliage: 0.0,
-            sky: 0.0,
             white_r: 0.0,
             white_g: 0.0,
             white_b: 0.0,

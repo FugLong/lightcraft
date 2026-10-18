@@ -47,9 +47,6 @@ pub struct FilmKernel {
     pub fog: [f32; 3],
     pub white: [f32; 3],
     pub axis: [f32; 3],
-    pub skin: f32,
-    pub foliage: f32,
-    pub sky: f32,
     /// `(cyan in green, magenta in blue, cyan in blue)`. Zero skips the dye correction.
     pub dye: [f32; 3],
     pub aim: [f32; 3],
@@ -80,13 +77,10 @@ impl FilmKernel {
             fog,
             white,
             axis: f.axis().map(|v| if v.is_finite() && v > 0.05 { v as f32 } else { 1.0 }),
-            skin: if f.stock.mono() { 0.0 } else { (f.skin / 100.0).clamp(-1.0, 1.0) as f32 },
-            foliage: if f.stock.mono() { 0.0 } else { (f.foliage / 100.0).clamp(-1.0, 1.0) as f32 },
-            sky: if f.stock.mono() { 0.0 } else { (f.sky / 100.0).clamp(-1.0, 1.0) as f32 },
             dye: if f.stock.mono() { [0.0; 3] } else { f.scan.dye().map(|v| v as f32) },
-            // Black-and-white stays one channel. Print, temperature, and the hue bands are hidden
-            // for these stocks, so a Portrait aim or a Warm look left over from a color frame
-            // must not tint the print. The settings themselves stay, for when the stock changes back.
+            // Black-and-white stays one channel. Print and temperature are hidden for these stocks,
+            // so a Portrait aim or a Warm look left over from a color frame must not tint the print.
+            // The settings themselves stay, for when the stock changes back.
             aim: if f.stock.mono() { [1.0; 3] } else { aim.map(|v| v as f32) },
             chroma: if f.stock.mono() { 1.0 } else { chroma as f32 },
             balance: if f.stock.mono() { [1.0; 3] } else { band_gain(f.temp, f.tint) },
@@ -101,7 +95,7 @@ impl FilmKernel {
 
     /// `P[1..]` of `film_k` (`P[0]` is the pixel count, added by the dispatcher).
     pub fn words(&self) -> Vec<u32> {
-        let mut w = Vec::with_capacity(46);
+        let mut w = Vec::with_capacity(43);
         let push = |w: &mut Vec<u32>, v: f32| w.push(v.to_bits());
         for v in self.base {
             push(&mut w, v);
@@ -155,9 +149,6 @@ impl FilmKernel {
         for v in self.axis {
             push(&mut w, v);
         }
-        push(&mut w, self.skin);
-        push(&mut w, self.foliage);
-        push(&mut w, self.sky);
         w
     }
 
@@ -239,7 +230,6 @@ impl FilmKernel {
             }
             scene[i] = v;
         }
-        hue_bands(&mut scene, self.skin, self.foliage, self.sky);
         scene
     }
 }
@@ -295,42 +285,6 @@ fn band_gain(temp: f64, tint: f64) -> [f32; 3] {
     let warm = 10f32.powf(0.40 * t);
     let green = 10f32.powf(-0.40 * n);
     [warm.clamp(0.15, 6.0), green.clamp(0.15, 6.0), (1.0 / warm).clamp(0.15, 6.0)]
-}
-
-/// Skin, foliage, and sky. The weight is zero on a neutral, so the gray axis stays put.
-fn hue_bands(scene: &mut [f32; 3], skin: f32, foliage: f32, sky: f32) {
-    if skin.abs() < 1e-4 && foliage.abs() < 1e-4 && sky.abs() < 1e-4 {
-        return;
-    }
-    let y = 0.2627 * scene[0] + 0.6780 * scene[1] + 0.0593 * scene[2];
-    let c = [scene[0] - y, scene[1] - y, scene[2] - y];
-    let mag = (c[0] * c[0] + c[1] * c[1] + c[2] * c[2]).sqrt();
-    if mag < 0.02 {
-        return;
-    }
-    let n = [c[0] / mag, c[1] / mag, c[2] / mag];
-    // (amount, hue direction, correction added along that hue). Same numbers as `film_k`.
-    let bands = [
-        (skin, [0.72f32, 0.22, -0.66], [0.12, -0.16, 0.02]),
-        (foliage, [-0.45, 0.84, -0.30], [0.02, 0.04, -0.16]),
-        (sky, [-0.25, -0.20, 0.95], [0.02, -0.14, 0.06]),
-    ];
-    for (amt, target, corr) in bands {
-        if amt.abs() < 1e-4 {
-            continue;
-        }
-        let tmag = (target[0] * target[0] + target[1] * target[1] + target[2] * target[2]).sqrt().max(1e-6);
-        let t = [target[0] / tmag, target[1] / tmag, target[2] / tmag];
-        let dot = (n[0] * t[0] + n[1] * t[1] + n[2] * t[2]).clamp(0.0, 1.0);
-        let w = ((dot - 0.55) / 0.45).clamp(0.0, 1.0);
-        let k = amt * w * mag.min(0.45);
-        for i in 0..3 {
-            scene[i] += corr[i] * k;
-        }
-    }
-    for c in scene.iter_mut() {
-        *c = c.max(0.0);
-    }
 }
 
 fn smooth(e0: f32, e1: f32, x: f32) -> f32 {
@@ -1854,7 +1808,6 @@ mod tests {
         assert!((g[0] - g[1]).abs() < 1e-5 && (g[1] - g[2]).abs() < 1e-5, "{g:?}");
         // A paper aim left on from a color frame is not shown for black-and-white, and must not tint it.
         f.print = lightcraft_develop::FilmPrint::Portrait;
-        f.skin = 100.0;
         f.temp = 40.0;
         f.tint = 30.0;
         f.presat = 50.0;
@@ -1876,7 +1829,7 @@ mod tests {
         f.set_base([0.8, 0.5, 0.25]);
         let k = FilmKernel::from_film(&f);
         let w = k.words();
-        assert_eq!(w.len(), 46);
+        assert_eq!(w.len(), 43);
         assert_eq!(w[0], (0.8f32).to_bits());
         assert_eq!(w[23], 1 | 2, "negative and mono flags");
         assert_eq!(f32::from_bits(w[24]), 2.2);
@@ -2146,26 +2099,6 @@ mod tests {
         let hi = [0.85f32, 0.85, 1.25];
         let pix = kept.apply([0, 1, 2].map(|i| orange[i] * 10f32.powf(-hi[i])));
         assert!(pix[2] > pix[1] + 0.04, "a blue highlight stays blue {pix:?}");
-    }
-
-    #[test]
-    fn hue_bands_leave_gray_and_move_a_green() {
-        let mut f = Film { enabled: true, stock: FilmStock::ColorPos, foliage: 100.0, ..Film::default() };
-        f.set_base([1.0, 1.0, 1.0]);
-        f.set_white([1.0, 1.0, 1.0]);
-        let k = FilmKernel::from_film(&f);
-        let gray = k.apply([0.5, 0.5, 0.5]);
-        // A neutral negative is a gray positive. Foliage must not tint it.
-        let spread = gray[0].max(gray[1]).max(gray[2]) - gray[0].min(gray[1]).min(gray[2]);
-        assert!(spread < 0.02, "gray stays gray {gray:?}");
-        let green = [0.15f32, 0.55, 0.12];
-        let moved = k.apply(green);
-        let plain = {
-            let mut z = f;
-            z.foliage = 0.0;
-            FilmKernel::from_film(&z).apply(green)
-        };
-        assert!((moved[2] - plain[2]).abs() > 0.01 || (moved[1] - plain[1]).abs() > 0.01, "foliage moves a green {moved:?} vs {plain:?}");
     }
 
     #[test]

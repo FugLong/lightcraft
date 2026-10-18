@@ -5,8 +5,8 @@ It runs on scene-linear transmission, before white balance, and hands a scene-li
 the rest of the pipeline. On a raw file with its own colour matrix the density is measured in
 white-balanced camera RGB; the matrix only carries the positive back to Rec.2020. A JPEG is already
 in the working space, so the same curve is only as true as that file. The GPU kernel `film_k`
-(`crates/gpu/src/wgsl/map.wgsl`) is the same formula, including the 46 words from `FilmKernel::words`
-and the hue bands. Settings and commands are `film.*`. A slide (`colorPos`, `bwPos`) is still
+(`crates/gpu/src/wgsl/map.wgsl`) is the same formula, including the 43 words from `FilmKernel::words`.
+Settings and commands are `film.*`. A slide (`colorPos`, `bwPos`) is still
 accepted by `film.setStock` so an old frame opens; it is not on the panel, because a slide is
 already a positive.
 
@@ -27,9 +27,8 @@ already a positive.
   Paper, Cinematic) changes color and the paper shoulder. It does not replace the border, the
   gray axis, exposure, contrast, or whether conversion is on. **Exposure**, **Contrast**, and
   **Blacks** place the print. On a color negative, **Temp**, **Tint**, and the shadow, midtone,
-  and highlight balances trim color, and **Skin**, **Foliage**, and **Sky** push a hue after the
-  gray is right. A black-and-white negative stops at the print sliders: the color looks and the
-  hue sliders stay off, so they cannot tint the gray. **More** on a color negative keeps the cast
+  and highlight balances trim color. A black-and-white negative stops at the print sliders: the
+  color looks stay off, so they cannot tint the gray. **More** on a color negative keeps the cast
   Auto removed, saturation, shoulder, the mask numbers, Film / Scene intent, scan gamma (Linear,
   1.8, 2.2), the shadow and highlight picks, and **Match roll**. On black-and-white, **More**
   keeps the shoulder, the scan gamma, and **Match roll**.
@@ -85,8 +84,7 @@ Black-and-white ignores that aim and stays one channel. The panel does not offer
 already set to `colorPos` or `bwPos` stays a positive and only applies contrast.
 
 Temperature, tint, and the three band balances are trims on the print, after exposure, so contrast
-does not multiply them. At the end of a slider they move about 0.40 density. Skin, foliage, and
-sky are hue bands after the print. A neutral has no weight in those bands.
+does not multiply them. At the end of a slider they move about 0.40 density.
 
 The frame is a quad on the rebate that touches the border: orange for a color negative, bright
 for black-and-white, dark for a slide. Convert stores it. **Auto** under **Crop** uses it, and

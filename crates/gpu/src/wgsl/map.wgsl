@@ -136,7 +136,7 @@ fn wb_k(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) nw
 // Negative Craft (`lightcraft_pipeline::film::FilmKernel::apply`). P[1..] is `FilmKernel::words`:
 // base, gamma, presat, slope, power (film gamma on a negative, grade on a slide), offset, shoulder,
 // balance, shadow, mid, high, flags, capture, fog.g, white.g, fog.rgb, white.rgb, dye.rgb, aim.rgb,
-// chroma, axis.rgb, skin, foliage, sky.
+// chroma, axis.rgb.
 @compute @workgroup_size(256)
 fn film_k(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) nw: vec3<u32>) {
     let i = lin_index(g, nw);
@@ -224,39 +224,6 @@ fn film_k(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) 
         let e = max(v - vec3<f32>(shoulder), vec3<f32>(0.0));
         let rolled = vec3<f32>(shoulder) + e / (vec3<f32>(1.0) + e / vec3<f32>(shoulder));
         v = select(v, rolled, v > vec3<f32>(shoulder));
-    }
-    // `hue_bands` in `lightcraft_pipeline::film`. Zero on a neutral.
-    let skin = pf(44u);
-    let foliage = pf(45u);
-    let sky = pf(46u);
-    if (abs(skin) > 1e-4 || abs(foliage) > 1e-4 || abs(sky) > 1e-4) {
-        let ly = lum2020(v);
-        let c = v - vec3<f32>(ly);
-        let mag = length(c);
-        if (mag >= 0.02) {
-            let nrm = c / mag;
-            let amounts = array<f32, 3>(skin, foliage, sky);
-            var dirs = array<vec3<f32>, 3>(
-                vec3<f32>(0.72, 0.22, -0.66),
-                vec3<f32>(-0.45, 0.84, -0.30),
-                vec3<f32>(-0.25, -0.20, 0.95),
-            );
-            var corrs = array<vec3<f32>, 3>(
-                vec3<f32>(0.12, -0.16, 0.02),
-                vec3<f32>(0.02, 0.04, -0.16),
-                vec3<f32>(0.02, -0.14, 0.06),
-            );
-            for (var b = 0u; b < 3u; b = b + 1u) {
-                if (abs(amounts[b]) < 1e-4) {
-                    continue;
-                }
-                let tmag = max(length(dirs[b]), 1e-6);
-                let dotv = clamp(dot(nrm, dirs[b] / tmag), 0.0, 1.0);
-                let w = clamp((dotv - 0.55) / 0.45, 0.0, 1.0);
-                v = v + corrs[b] * (amounts[b] * w * min(mag, 0.45));
-            }
-            v = max(v, vec3<f32>(0.0));
-        }
     }
     put_rgb(i, v);
 }

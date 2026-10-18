@@ -1,6 +1,6 @@
 # Lightroom parity checklist
 
-> **Last reviewed:** 2026-10-17 · **Last updated:** 2026-10-17 · **Change:** patch (Negative Craft stays hidden until Window ▸ Edit Sections ▸ Negative Craft) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
+> **Last reviewed:** 2026-10-17 · **Last updated:** 2026-10-17 · **Change:** patch (Negative Craft cleanup: Skin, Foliage, and Sky removed) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
 
 The measured, row-by-row checklist: one row per Lightroom feature, menu item and shortcut, what we
 have and what is missing. It answers *does the feature exist?* (feature breadth). Whether it is good
@@ -802,7 +802,7 @@ Latin stays upright. Advanced Japanese composition remains open. Regression cove
 | LR-FILM-FRAME | Analysis frame | P2 | ✅ | `cmd:film.setFrame`, `cmd:film.analyze`, `cmd:film.cropToImage` | quad fit to the rebate; a miss keeps the previous quad and reports `frameError`; Crop ▸ Auto crops to the picture, including inside sprocket holes, and does not reprint |
 | LR-FILM-PICK | Base and neutral picks | P2 | ✅ | `cmd:film.pickBase`, `cmd:film.pickShadow`, `cmd:film.pickHighlight`, `cmd:film.pickGray` | a pale or white-balanced rebate is a valid base; a clipped lamp is refused; a gray click sets the axis and does not refit it; two neutrals set per-channel contrast |
 | LR-FILM-ROLL | Roll analysis | P2 | ✅ | `cmd:film.analyzeRoll` | shared mask color and gray axis; each frame's exposure is placed again with that axis; drift warning past half a stop |
-| LR-FILM-CONTROLS | Paper and cast | P2 | ✅ | `ctl:film.exposure`, `ctl:film.grade`, `ctl:film.black`, `ctl:film.shoulder`, `ctl:film.presat`, `ctl:film.temp`, `ctl:film.tint`, `ctl:film.shadowTemp`, `ctl:film.midTemp`, `ctl:film.highTemp`, `ctl:film.skin`, `ctl:film.foliage`, `ctl:film.sky` | shadow, mid, and highlight balance reach about 0.40 density; hue bands are zero on a neutral |
+| LR-FILM-CONTROLS | Paper and cast | P2 | ✅ | `ctl:film.exposure`, `ctl:film.grade`, `ctl:film.black`, `ctl:film.shoulder`, `ctl:film.presat`, `ctl:film.temp`, `ctl:film.tint`, `ctl:film.shadowTemp`, `ctl:film.midTemp`, `ctl:film.highTemp` | shadow, mid, and highlight balance reach about 0.40 density |
 | LR-FILM-STOCKS | Slides and black-and-white | P2 | ✅ | `cmd:film.setStock`, `cmd:film.setIntent`, `cmd:film.inspect` | color and black-and-white negatives and slides; Stock leaves a dominant color alone |
 | LR-FILM-COLOR | Scan and print balance | P2 | ✅ | `cmd:film.setScan`, `cmd:film.setPrint`, `crates/pipeline/src/film.rs` | gray axis removes a cast whose sign holds through the scale; Camera, Minilab, and Flat set the dye correction; Neutral, Portrait, Vivid, and Lab are the paper |
 
@@ -810,6 +810,7 @@ Latin stays upright. Advanced Japanese composition remains open. Regression cove
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-17 | patch | LR-FILM-CONTROLS: cleanup, Skin / Foliage / Sky removed (status unchanged, ✅) |
 | 2026-10-17 | patch | LR-FILM-CONVERT: the Edit section stays hidden until Window ▸ Edit Sections ▸ Negative Craft (status unchanged, ✅) |
 | 2026-10-17 | patch | LR-FILM-PICK, LR-FILM-FRAME: a pale or white-balanced rebate is a valid film base; only a clipped lamp is refused (status unchanged, ✅) |
 | 2026-10-17 | patch | LR-FILM-CONVERT, LR-FILM-COLOR, LR-FILM-ROLL: film-gamma inversion with highlight headroom, Hanson dye inverse, robust gray axis, camera-space measurement on raw (status unchanged, ✅) |

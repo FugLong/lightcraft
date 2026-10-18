@@ -574,10 +574,6 @@ fn film_section(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId, d: &Dev
                 {
                     control(app, ui, d, c, true);
                 }
-                divider(ui);
-                for c in ["film.skin", "film.foliage", "film.sky"] {
-                    control(app, ui, d, c, true);
-                }
             }
             let open = app.ui.flyout_open("filmMore");
             if flyout_row(ui, "filmMore", "More", Icon::Sliders, open).clicked() {

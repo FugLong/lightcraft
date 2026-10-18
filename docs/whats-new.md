@@ -9,8 +9,7 @@
   highlight detail left for the tone curve. The scan needs that blank film in the frame, bright and not
   clipped. A gray axis takes out a cast that runs through the whole frame, and **Gray** sets that axis
   from one tone that should print gray. A raw scan is balanced in the camera's own colour, before the
-  working-space conversion. **Skin**, **Foliage**, and **Sky** shift those hues once the gray is right.
-  How to scan and convert is in `docs/user/guides/convert-a-negative.md`.
+  working-space conversion. How to scan and convert is in `docs/user/guides/convert-a-negative.md`.
 
 ## 2026-10-14
 

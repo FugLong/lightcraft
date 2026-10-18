@@ -310,9 +310,6 @@ controls! {
     "film.midTemp" => film.mid_temp, "Midtone Temp", Film, -100, 100, 0, 1, 0, Temp;
     "film.midTint" => film.mid_tint, "Midtone Tint", Film, -100, 100, 0, 1, 0, Tint;
     "film.highTemp" => film.high_temp, "Highlight Temp", Film, -100, 100, 0, 1, 0, Temp;
-    "film.skin" => film.skin, "Skin", Film, -100, 100, 0, 1, 0, Centered;
-    "film.foliage" => film.foliage, "Foliage", Film, -100, 100, 0, 1, 0, Centered;
-    "film.sky" => film.sky, "Sky", Film, -100, 100, 0, 1, 0, Centered;
     "film.highTint" => film.high_tint, "Highlight Tint", Film, -100, 100, 0, 1, 0, Tint;
 }
 
