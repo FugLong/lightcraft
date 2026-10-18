@@ -1,5 +1,13 @@
 # What's new in LightCraft
 
+## 2026-10-18
+
+### Tethered capture (Sony, macOS)
+- **File ▸ Start Tethered Capture** talks to a Sony camera in PC Remote (the A7 III profile). The loupe shows the
+  live view, and the bar under it changes aperture, shutter and ISO, turns on the focus magnifier, and shoots.
+  The raw is imported and selected. No Sony app is required. This has not yet been confirmed on a plugged-in body.
+  Canon, Nikon, and Windows / Linux are not in this build.
+
 ## 2026-10-14
 
 ### Lightroom radial masks on the right side

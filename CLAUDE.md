@@ -40,10 +40,11 @@ of it. Full standard: `../craftrules/standards/never-crash.md`
   fallback (`unwrap_or…`) only where it can't silently corrupt a document. An unfinished feature returns an
   "unsupported" error or is disabled. Sole exception: a provably infallible literal, as `#[allow(clippy::expect_used)]`
   + `.expect("why it can't fail")`.
-- **`unsafe` lives only in `crates/sysmem`** (one FFI call, `malloc_zone_pressure_relief`, that returns freed
-  allocator pages to macOS after raw decodes). Every other production crate root has `#![forbid(unsafe_code)]`. A new
-  unsafe need goes in an isolated, well-tested helper crate like it: `// SAFETY:` on every block, a safe API, a safe
-  fallback where possible, and a line here naming it.
+- **`unsafe` lives only in `crates/sysmem` and `crates/cameras`.** `sysmem` has one FFI call,
+  `malloc_zone_pressure_relief`, that returns freed allocator pages to macOS after raw decodes. `cameras` talks to
+  Image Capture on macOS; its public API is safe and `unsafe` stays in that module. Every other production crate root
+  has `#![forbid(unsafe_code)]`. A new unsafe need goes in an isolated, well-tested helper crate like these:
+  `// SAFETY:` on every block, a safe API, a safe fallback where possible, and a line here naming it.
 - **Input-derived numbers are hostile:** `get()` instead of `[i]`/`[a..b]` for offsets from files, users, agents or
   arithmetic on them; checked/saturating math for lengths, offsets and counts; no division by zero, NaN/inf or negative
   casts to `usize`; cap allocations sized by input; slice strings only at char boundaries.

@@ -40,6 +40,7 @@ mod query;
 pub mod recheck;
 mod slideshow;
 mod sync;
+mod tether;
 mod xmp;
 
 use serde::Serialize;
@@ -177,6 +178,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(face_recognize::specs());
         v.extend(focus::specs());
         v.extend(activity::specs());
+        v.extend(tether::specs());
         v
     })
 }

@@ -1,0 +1,20 @@
+[package]
+name = "lightcraft-cameras"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "LightCraft camera link (L0): ImageCaptureCore PTP on macOS. Safe API; unsafe only in the macOS module."
+
+# Same exception as lightcraft-sysmem: the macOS module is the only `unsafe`, and the public API is safe.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { workspace = true }
+objc2-foundation = { workspace = true, features = ["NSDate", "NSObjCRuntime", "NSRunLoop", "NSString"] }
+block2 = "0.6"
+objc2-image-capture-core = "0.3"

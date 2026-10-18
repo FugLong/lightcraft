@@ -1,6 +1,6 @@
 # Lightroom parity checklist
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-14 · **Change:** minor (integration batch 36: slideshow module, print-ready PDF fixes, local adjustment presets, Layout Image loupe overlay, Delete in an album removes from it, new languages Czech, Polish, Italian-ready catalogs; many rows' notes updated by their PRs) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
+> **Last reviewed:** 2026-10-18 · **Last updated:** 2026-10-18 · **Change:** minor (Sony tethered capture on macOS, not yet confirmed on a body) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
 
 The measured, row-by-row checklist: one row per Lightroom feature, menu item and shortcut, what we
 have and what is missing. It answers *does the feature exist?* (feature breadth). Whether it is good
@@ -52,10 +52,10 @@ cited here still exists. Formerly docs/parity.md.
 | X. Cross-cutting behaviours (BEHAV) | 23 | 6 | 1 | 1 | 8/8 (100%) | 7/10 (70%) |
 | Y. Menus | 84 | 0 | 4 | 8 | 47/47 (100%) | 23/23 (100%) |
 | Z. Keyboard shortcuts (desktop) | 78 | 4 | 2 | 1 | 49/52 (94%) | 24/26 (92%) |
-| Lightroom Classic extras | 40 | 23 | 23 | 8 | — | 24/26 (92%) |
-| **Total** | 419 | 61 | 59 | 35 | 194/201 (97%) | 148/161 (92%) |
+| Lightroom Classic extras | 40 | 24 | 22 | 8 | — | 24/26 (92%) |
+| **Total** | 419 | 62 | 58 | 35 | 194/201 (97%) | 148/161 (92%) |
 
-Weighted completion (✅ = 1, 🟡 = ½, 🚫 left out): **83.4%** of 539 in-scope rows — P0 98.3% of 201 · P1 95.0% of 161 · P2 55.7% of 176.
+Weighted completion (✅ = 1, 🟡 = ½, 🚫 left out): **83.5%** of 539 in-scope rows — P0 98.3% of 201 · P1 95.0% of 161 · P2 56.0% of 176.
 <!-- /parity:summary -->
 
 ## Top gaps and shortcut notes
@@ -692,7 +692,7 @@ From `08-lightroom-classic-extras.md` (Classic-only features) and part 2 of `06-
 |---|---|---|---|---|---|
 | LRC-LIB-IMPORT | Full import dialog | P1 | ✅ | `cmd:library.import` (`mode`, `destination`, `organize`, `rename`, `metadataPreset`, `preset`, `keywords`, `album`), `crates/ui-egui/src/import.rs` | review grid with duplicates skipped; add in place or copy (library Originals or any folder; by day / by month / one folder / custom folder template such as `{date:%Y}/{date:%Y%m%d}` → 2026/20260114, kept inside the destination; example destination shown; rename template with live example, Tags picker (insert at cursor) and unknown-tag warning, numbered across the import); develop preset, metadata preset, keywords, album on import |
 | LRC-LIB-AUTOIMPORT | Watched-folder import | P2 | ✅ | `cmd:library.autoImport` | see LR-IMP-AUTO |
-| LRC-LIB-TETHER | Tethered capture | P2 | ⬜ | | |
+| LRC-LIB-TETHER | Tethered capture | P2 | 🟡 | `cmd:tether.start`, `cmd:tether.stop`, `cmd:tether.capture`, `cmd:tether.set`, `cmd:tether.status`, `crates/ptp`, `crates/cameras`, `crates/engine/src/tether.rs`, `crates/ui-egui/src/panels/tether.rs` | macOS only, Sony Camera Control PTP 2 (the A7 III / PC Remote profile). File ▸ Start Tethered Capture shows the live view in the loupe, with aperture, shutter, ISO, the focus magnifier and Shoot. A shot from the computer or the body is imported and selected, and `preset` on `tether.start` can apply a develop preset. Not yet confirmed on a plugged-in A7 III. Canon, Nikon, PTP 3, Linux and Windows are not started |
 | LRC-LIB-VIEWS | Grid / loupe / compare / survey / people | P1 | 🟡 | `cmd:view.photoGrid`, `cmd:view.squareGrid`, `cmd:view.detail`, `cmd:view.compare`, `cmd:view.survey`, `cmd:view.gridInfo` | grid, square grid, loupe, compare, survey, second window; square-grid captions: file name, exposure or capture date (View ▸ Grid Info; no people view; picking one in Photo Grid switches to Square Grid) |
 | LRC-LIB-COMPARE | Compare view | P1 | ✅ | `cmd:view.compare` | ⇧C (C is Crop here); swap, make select; a filmstrip click replaces the active side, a ⌘/Ctrl- or Shift-click changes the selection without touching the pair; zoom always linked; each pane says “Rendering…” or that the photo can't be opened, as the loupe does (see LR-VIEW-COMPARE) |
 | LRC-LIB-SURVEY | Survey view | P2 | ✅ | `cmd:view.survey` | N |

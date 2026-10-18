@@ -444,6 +444,9 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
     if show_film {
         filmstrip(app, ui, Rect::from_min_max(pos2(full.left(), canvas.bottom()), full.max));
     }
+    if super::tether::show(app, ui, canvas) {
+        return;
+    }
     let Some(id) = app.session.active() else {
         if super::empty_library::shown(&app.session) {
             super::empty_library::show(app, ui, canvas);

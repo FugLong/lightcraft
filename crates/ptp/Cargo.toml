@@ -1,0 +1,11 @@
+[package]
+name = "lightcraft-ptp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "LightCraft PTP (L1): containers and a Sony Camera Control PTP 2 session. No USB."
+
+[lints]
+workspace = true
+
+[dependencies]

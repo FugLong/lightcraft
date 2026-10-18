@@ -3102,6 +3102,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "lightcraft-cameras"
+version = "0.8.0"
+dependencies = [
+ "block2 0.6.2",
+ "objc2 0.6.4",
+ "objc2-foundation 0.3.2",
+ "objc2-image-capture-core",
+]
+
+[[package]]
 name = "lightcraft-catalog"
 version = "0.8.0"
 dependencies = [
@@ -3226,6 +3236,7 @@ dependencies = [
  "harfrust",
  "jxl-oxide",
  "libc",
+ "lightcraft-cameras",
  "lightcraft-catalog",
  "lightcraft-codecs",
  "lightcraft-color",
@@ -3243,6 +3254,7 @@ dependencies = [
  "lightcraft-meta",
  "lightcraft-pipeline",
  "lightcraft-preview",
+ "lightcraft-ptp",
  "lightcraft-raster",
  "lightcraft-raw",
  "lightcraft-scenes",
@@ -3414,6 +3426,10 @@ dependencies = [
  "zune-core",
  "zune-jpeg",
 ]
+
+[[package]]
+name = "lightcraft-ptp"
+version = "0.8.0"
 
 [[package]]
 name = "lightcraft-raster"
@@ -4170,6 +4186,20 @@ dependencies = [
  "libc",
  "objc2 0.6.4",
  "objc2-core-foundation",
+]
+
+[[package]]
+name = "objc2-image-capture-core"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6b153f2757b48c47daa739a4c8f27ec2912ddbfe5cb6fd28738ec5d6e1a0e83a"
+dependencies = [
+ "block2 0.6.2",
+ "libc",
+ "objc2 0.6.4",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-foundation 0.3.2",
 ]
 
 [[package]]

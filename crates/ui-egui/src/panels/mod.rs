@@ -36,6 +36,7 @@ pub mod slide_templates;
 pub mod slide_titles;
 pub mod slideshow;
 pub mod strip;
+pub mod tether;
 pub mod topbar;
 pub mod unnamed;
 

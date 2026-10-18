@@ -1044,6 +1044,7 @@ impl LightcraftApp {
     /// on other threads (export, denoise, the device warm-up). `false`: the deadline passed first
     /// (the host exits anyway). The app renders nothing afterwards.
     pub fn shutdown(&mut self, timeout: std::time::Duration) -> bool {
+        self.session.tether.finish(std::time::Duration::from_secs(20));
         lightcraft_engine::gpu::begin_shutdown();
         #[cfg(not(target_arch = "wasm32"))]
         let t0 = std::time::Instant::now();
@@ -1129,6 +1130,9 @@ impl LightcraftApp {
             }
         }
         self.ui.was_focused = focused;
+        if panels::tether::pump(self) {
+            ctx.request_repaint();
+        }
         // auto import: list the watched folder every few seconds (on a worker thread: it may be on
         // a network share), then import what's new like any import (also on a worker thread)
         #[cfg(not(target_arch = "wasm32"))]

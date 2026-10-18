@@ -78,6 +78,7 @@ pub mod slideshow;
 pub mod slideshow_export;
 pub mod smart;
 pub mod sync;
+pub mod tether;
 pub mod text;
 mod view;
 pub mod walk;
@@ -345,6 +346,8 @@ pub struct Session {
     /// Background tasks in flight (imports, exports, preview builds…), for the activity stack and
     /// `activity.list` / `activity.cancel`.
     pub activity: activity::Activity,
+    /// Sony PC Remote. The frame loop calls [`tether::pump`].
+    pub tether: tether::Hub,
     /// The last (or running) slideshow export (`slideshow.export`).
     pub slideshow_export: Option<std::sync::Arc<slideshow_export::ExportRun>>,
     /// The last (or running) Build Previews.
@@ -480,6 +483,7 @@ impl Session {
             import_probes: Default::default(),
             folder_changes: None,
             activity: Default::default(),
+            tether: tether::Hub::new(),
             preview_build: None,
             slideshow_export: None,
             import_defaults: import::ImportDefaults::default(),
