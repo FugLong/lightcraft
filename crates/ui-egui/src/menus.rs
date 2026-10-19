@@ -1189,12 +1189,16 @@ pub fn run_ui_command(app: &mut LightcraftApp, id: &str, p: &Value) -> Option<Re
             if app.ui.right != RightPanel::Edit {
                 app.ui.right = RightPanel::Edit;
             }
-            // The menu (no `solo`) turns Negative Craft on and opens it. A header click sends
-            // `solo` and only folds the section that is already on screen.
-            if sec == "film" && !app.ui.negative_craft && p.get("solo").is_none() {
-                app.ui.negative_craft = true;
-                if !app.ui.section_open(sec) {
-                    app.ui.toggle_section(sec);
+            // The menu (no `solo`) turns Negative Craft on and opens it, or off and closes it.
+            // A header click sends `solo` and only folds the section that is already on screen.
+            if sec == "film" && p.get("solo").is_none() {
+                app.ui.negative_craft = !app.ui.negative_craft;
+                if app.ui.negative_craft {
+                    if !app.ui.section_open(sec) {
+                        app.ui.toggle_section(sec);
+                    }
+                } else {
+                    app.ui.open_sections.retain(|s| s != sec);
                 }
                 return Ok(Value::Null);
             }

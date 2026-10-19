@@ -860,14 +860,26 @@ fn wide_button(ui: &mut egui::Ui, id: &str, label: &str, accent: bool) -> egui::
     resp
 }
 
+/// Density readout depends on the film settings and how the scan is oriented, not on Light or Color.
+fn film_meter_key(d: &DevelopSettings) -> u64 {
+    let text = serde_json::to_string(&json!({"orientation": d.orientation, "film": d.film})).unwrap_or_default();
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in text.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    h
+}
+
 fn refresh_film_meter(app: &mut LightcraftApp, id: PhotoId, d: &DevelopSettings) {
-    let hash = d.hash64();
+    let hash = film_meter_key(d);
     let fresh = app.ui.film_meter.as_ref().is_some_and(|(pid, h, _, _, _)| *pid == id.0 && *h == hash);
     if fresh {
         return;
     }
     let Ok(v) = app.run("film.inspect", json!({})) else {
-        app.ui.film_meter = None;
+        // Remember the failure for this photo and key, so a missing file is not read every frame.
+        app.ui.film_meter = Some((id.0, hash, Vec::new(), 0.0, 0.0));
         return;
     };
     let bins = v.get("bins").and_then(|b| b.as_array()).map(|a| a.iter().filter_map(|n| n.as_f64().map(|x| x as f32)).collect()).unwrap_or_default();
@@ -2239,5 +2251,21 @@ mod tests {
         assert_eq!(reset_tip(&rebound, false), "Reset all edits (Ctrl+Alt+R)");
         let unbound: crate::shortcuts::Keymap = [("develop.reset".to_string(), String::new())].into();
         assert_eq!(reset_tip(&unbound, false), "Reset all edits");
+    }
+
+    #[test]
+    fn the_film_meter_ignores_sliders_that_do_not_change_the_scan() {
+        let mut d = DevelopSettings::default();
+        d.film.enabled = true;
+        d.film.base_r = 0.4;
+        let key = film_meter_key(&d);
+        d.light.exposure = 1.5;
+        d.color.saturation = 20.0;
+        assert_eq!(film_meter_key(&d), key, "Light and Color do not reread the density");
+        d.film.base_g = 0.3;
+        assert_ne!(film_meter_key(&d), key);
+        d.film.base_g = 1.0;
+        d.orientation = lightcraft_geom::Orientation::Rotate90;
+        assert_ne!(film_meter_key(&d), key, "orientation changes which edge is the border");
     }
 }

@@ -316,6 +316,17 @@ mod tests {
             .merged(&json!({"light": {"exposure": 1e308}, "vignette": {"amount": -1e308}, "geometry": {"scale": 0}, "optics": {"distortion": 1e308}}))
             .unwrap();
         assert_eq!((m.light.exposure, m.vignette.amount, m.geometry.scale, m.optics.distortion), (5.0, -100.0, 50.0, 100.0));
+        // Analysis can store a base down to 1e-4 and a scene gamma down to 0.05 or up to 4.
+        // A later merge must not pull those back into a narrower slider range.
+        let measured = DevelopSettings::default()
+            .merged(&json!({"film": {"base_r": 1e-4, "base_g": 0.4, "base_b": 1.5, "gamma_r": 0.05, "gamma_g": 4.0, "gamma_b": 1.0}}))
+            .unwrap();
+        assert!((measured.film.base_r - 1e-4).abs() < 1e-12);
+        assert!((measured.film.gamma_r - 0.05).abs() < 1e-12);
+        assert!((measured.film.gamma_g - 4.0).abs() < 1e-12);
+        let clamped = DevelopSettings::default().merged(&json!({"film": {"base_r": 0.0, "gamma_r": 10.0}})).unwrap();
+        assert!((clamped.film.base_r - 1e-4).abs() < 1e-12);
+        assert!((clamped.film.gamma_r - 4.0).abs() < 1e-12);
         // point curves stay in 0..1, as an imported XMP curve does
         let m = base.merged(&json!({"curve": {"master": [{"x": -3, "y": 0}, {"x": 1, "y": 1e308}]}})).unwrap();
         assert_eq!(m.curve.master, vec![lightcraft_geom::Point::new(0.0, 0.0), lightcraft_geom::Point::new(1.0, 1.0)]);

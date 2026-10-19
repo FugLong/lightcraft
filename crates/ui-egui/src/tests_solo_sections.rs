@@ -103,6 +103,21 @@ fn negative_craft_stays_hidden_until_the_edit_menu_enables_it() {
     assert_eq!(crate::menubar::checked(&h.app, "section.film"), Some(true));
     assert!(widgets(&mut h).contains("\"section:film\""), "the section sits above Light once enabled");
 
+    exec(&mut h, "section.film", json!({"solo": true}));
+    assert!(h.app.ui.negative_craft, "a header click folds the section and leaves Negative Craft on");
+    assert!(h.app.ui.section_open("film"));
+
+    exec(&mut h, "section.film", json!({}));
+    h.step();
+    assert!(!h.app.ui.negative_craft, "the menu item unchecks Negative Craft");
+    assert!(!h.app.ui.section_open("film"));
+    assert_eq!(crate::menubar::checked(&h.app, "section.film"), Some(false));
+    assert!(!widgets(&mut h).contains("\"section:film\""), "unchecking the menu takes the section off an unconverted photo");
+
+    exec(&mut h, "section.film", json!({}));
+    h.step();
+    assert!(h.app.ui.negative_craft);
+
     click(&mut h, json!({"id": "section:film", "button": "right"}));
     click(&mut h, json!({"id": "sectionMenu:hideFilm"}));
     h.step();

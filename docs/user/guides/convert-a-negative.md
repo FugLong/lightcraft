@@ -4,6 +4,8 @@ description: Turn a color or black-and-white negative into a positive from the b
 order: 35
 ---
 
+## The scan
+
 Leave a strip of blank film in the scan. Open the photo in **Edit**, turn on **Negative Craft**, then click **Convert**. LightCraft prints the picture from that blank film.
 
 ## Before you scan
@@ -16,7 +18,7 @@ Leave a strip of blank film in the scan. Open the photo in **Edit**, turn on **N
 ## Steps
 
 1. Double-click the photo and press `E` to open **Edit**.
-2. Open **Window**, then **Edit Sections**, then **Negative Craft**. The section appears above **Light** and stays there on later photos. Right-click the **Negative Craft** header and choose **Hide Negative Craft** to put it away.
+2. Open **Window**, then **Edit Sections**, then **Negative Craft**. The section appears above **Light** and stays there on later photos. Choose that menu item again, or right-click the **Negative Craft** header and choose **Hide Negative Craft**, to put it away.
 3. Choose **Color Neg** or **B&W**.
 4. Click **Convert**. The swatch is the blank film LightCraft measured. When the edge has no blank film, LightCraft says so and keeps the previous border.
 5. If the swatch is wrong, click **Border**, then click the blank film. A pale border works. A border the highlight warning marked is clipped: scan that frame again with less exposure.

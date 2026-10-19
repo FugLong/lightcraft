@@ -144,10 +144,12 @@ fn film_k(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) 
         return;
     }
     var t = rgb_a(i);
+    // `FilmKernel::apply`: non-finite or negative transmission is 0 (NaN fails `t >= 0`).
+    t = select(vec3<f32>(0.0), t, t >= vec3<f32>(0.0) & t < vec3<f32>(3.0e38));
     let capture = pf(25u);
     let presat = pf(7u);
     if (capture > 1.001) {
-        t = pow(max(t, vec3<f32>(0.0)), vec3<f32>(capture));
+        t = pow(t, vec3<f32>(capture));
     }
     if (abs(presat - 1.0) > 1e-6) {
         let y = (t.x + t.y + t.z) / 3.0;

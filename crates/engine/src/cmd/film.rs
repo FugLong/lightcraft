@@ -1,6 +1,6 @@
 //! Negative Craft commands. Analysis reads a thumbnail; the conversion itself is the film stage.
 
-use lightcraft_catalog::PhotoId;
+use lightcraft_catalog::{Op, PhotoId};
 use lightcraft_develop::{DevelopSettings, Film, FilmCapture, FilmFrame, FilmIntent, FilmPrint, FilmScan, FilmStock};
 use lightcraft_pipeline::film::{self, DRIFT_WARN};
 use serde_json::{Value, json};
@@ -11,9 +11,19 @@ use crate::{Result, Session, media::SourceLevel};
 /// Source changes (stock, intent, scan gamma) are remeasured when conversion is already on,
 /// so the print follows the new choice. The color look is left as it was.
 fn commit_measured(s: &mut Session, id: PhotoId, d: DevelopSettings, label: &str, cmd: &str) -> Result<Value> {
-    let on = d.film.enabled;
+    if !d.film.enabled {
+        commit(s, id, d, label)?;
+        return ok();
+    }
+    // Measure first, then commit once. A failed read leaves the previous print, and one undo
+    // restores both the source choice and the measurement it produced.
+    let img = scanner_image(s, id, cmd)?;
+    let analysis = film::analyze_image(&img, &d.film);
+    let out = stats_json(&analysis.stats, analysis.frame_error.as_deref());
+    let mut d = d;
+    d.film = analysis.film;
     commit(s, id, d, label)?;
-    if on { run_analyze(s, id, cmd) } else { ok() }
+    Ok(out)
 }
 
 /// The thumbnail in the space density is measured in: camera RGB when the file has its own
@@ -100,6 +110,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 let stats: Vec<_> = prepared.iter().map(|(_, a)| a.stats.clone()).collect();
                 let shared = film::share_roll(&stats);
                 let mut warnings = Vec::new();
+                let mut ops = Vec::new();
                 for ((id, analysis), share) in prepared.iter().zip(&shared) {
                     let mut d = s.develop_of(*id).unwrap_or_default().as_ref().clone();
                     d.film = analysis.film.clone();
@@ -120,11 +131,13 @@ pub fn specs() -> Vec<CommandSpec> {
                     d.film.exposure = placed.exposure;
                     d.film.intent = intent;
                     d.film.enabled = true;
-                    commit(s, *id, d, "Negative Craft Roll")?;
+                    // One batch, not set_develop: Auto Sync must not copy the last frame onto the others.
+                    ops.push(s.develop_op(*id, d, "Negative Craft Roll").ok_or_else(|| bad("film.analyzeRoll", "photo not found"))?);
                     if share.drift.abs() > DRIFT_WARN {
                         warnings.push(json!({"id": id.0, "stops": share.drift}));
                     }
                 }
+                s.commit("Negative Craft Roll", Op::Batch { ops })?;
                 Ok(json!({"frames": ids.len(), "warnings": warnings}))
             }
         ),
@@ -379,6 +392,57 @@ mod tests {
         assert_eq!(look.base(), placed.base());
         let roll = s.execute("film.analyzeRoll", &json!({})).expect("roll");
         assert!(roll.get("frames").is_some());
+    }
+
+    #[test]
+    fn a_source_change_is_one_undo_with_its_new_measurement() {
+        let mut s = crate::Session::with_demo();
+        let id = s.active().expect("demo photo");
+        s.execute("film.analyze", &json!({})).expect("analyze");
+        let before = s.develop_of(id).expect("settings").film.clone();
+        let steps = s.undo.len();
+        s.execute("film.setStock", &json!({"stock": "bwNeg"})).expect("stock");
+        assert_eq!(s.undo.len(), steps + 1, "the stock and its remeasurement are one step");
+        let after = s.develop_of(id).expect("settings").film.clone();
+        assert_eq!(after.stock, lightcraft_develop::FilmStock::BwNeg);
+        assert!(after.enabled);
+        s.undo_step().expect("undo");
+        let restored = s.develop_of(id).expect("settings").film.clone();
+        assert_eq!(restored.stock, before.stock);
+        assert_eq!(restored.base(), before.base());
+        assert!((restored.exposure - before.exposure).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_roll_is_one_undo_and_auto_sync_does_not_copy_one_frame_onto_another() {
+        let ids: Vec<_> = {
+            let s = crate::Session::with_demo();
+            s.catalog.photos().map(|p| p.id).take(2).collect()
+        };
+        assert_eq!(ids.len(), 2, "the demo library has two photos");
+        let run = |sync: bool| {
+            let mut s = crate::Session::with_demo();
+            s.auto_sync = sync;
+            s.selection.ids = ids.clone();
+            s.selection.active = ids.last().copied();
+            let steps = s.undo.len();
+            s.execute("film.analyzeRoll", &json!({})).expect("roll");
+            assert_eq!(s.undo.len(), steps + 1, "the roll is one undo step");
+            let films: Vec<_> = ids.iter().map(|id| s.develop_of(*id).expect("settings").film.clone()).collect();
+            assert!(films.iter().all(|f| f.enabled));
+            s.undo_step().expect("undo");
+            for id in &ids {
+                assert!(!s.develop_of(*id).expect("settings").film.enabled, "one undo clears every frame");
+            }
+            films
+        };
+        let plain = run(false);
+        let synced = run(true);
+        for (a, b) in plain.iter().zip(&synced) {
+            assert_eq!(a.base(), b.base());
+            assert!((a.exposure - b.exposure).abs() < 1e-9);
+            assert_eq!(a.gamma(), b.gamma());
+        }
     }
 
     #[test]
