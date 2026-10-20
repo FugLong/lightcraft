@@ -449,6 +449,9 @@ pub struct FrameStats {
     pub dominant: f64,
     pub bins: Vec<f32>,
     pub rebate_black: bool,
+    /// The base came from blank film in this scan. A miss keeps the previous base and must not
+    /// move the roll's shared mask color.
+    pub mask_measured: bool,
     pub d_lo: f64,
     pub d_hi: f64,
     pub fog: [f64; 3],
@@ -1022,6 +1025,7 @@ fn measure(img: &Rgb32f, film: &Film) -> FrameStats {
         dominant: 0.0,
         bins: vec![0.0; 32],
         rebate_black: false,
+        mask_measured: false,
         d_lo: film.d_lo,
         d_hi: film.d_hi,
         fog: film.fog(),
@@ -1042,7 +1046,7 @@ fn measure(img: &Rgb32f, film: &Film) -> FrameStats {
             interior.push(*p);
         }
     }
-    let (base, rebate_black) = mask_base(img, &film.frame, film.stock, &interior, film.base());
+    let (base, rebate_black, mask_measured) = mask_base(img, &film.frame, film.stock, &interior, film.base());
     let rebate_level = luminance_2020(base.map(|v| v as f32)) as f64;
     let (gamma, dominant) = match film.intent {
         FilmIntent::Stock => (film.gamma(), dominant_fraction(&interior, &base)),
@@ -1062,6 +1066,7 @@ fn measure(img: &Rgb32f, film: &Film) -> FrameStats {
         dominant,
         bins,
         rebate_black,
+        mask_measured,
         d_lo: placed.d_lo,
         d_hi: placed.d_hi,
         fog: placed.fog,
@@ -1121,7 +1126,7 @@ impl Placement {
     }
 }
 
-fn mask_base(img: &Rgb32f, frame: &FilmFrame, stock: FilmStock, interior: &[[f32; 3]], fallback: [f64; 3]) -> ([f64; 3], bool) {
+fn mask_base(img: &Rgb32f, frame: &FilmFrame, stock: FilmStock, interior: &[[f32; 3]], fallback: [f64; 3]) -> ([f64; 3], bool, bool) {
     let mut outside_orange = Vec::new();
     let mut any_orange = Vec::new();
     let mut outside_clear = Vec::new();
@@ -1174,19 +1179,20 @@ fn mask_base(img: &Rgb32f, frame: &FilmFrame, stock: FilmStock, interior: &[[f32
         } else {
             border_color(&any_pale)
         };
-        return (chosen.unwrap_or(fallback), true);
+        let mask_measured = chosen.is_some();
+        return (chosen.unwrap_or(fallback), true, mask_measured);
     }
     if stock == FilmStock::BwNeg
         && let Some(b) = bright_tail(&outside_bw, 0.90)
     {
-        return (b, true);
+        return (b, true, true);
     }
     if matches!(stock, FilmStock::ColorPos | FilmStock::BwPos)
         && let Some(b) = bright_tail(interior, 0.98)
     {
-        return (b, false);
+        return (b, false, false);
     }
-    bright_tail(interior, 0.97).map(|b| (b, false)).unwrap_or(([1.0, 1.0, 1.0], false))
+    bright_tail(interior, 0.97).map(|b| (b, false, false)).unwrap_or(([1.0, 1.0, 1.0], false, false))
 }
 
 /// Clear film near the brightest sample, averaged from the half with the lowest blue/red.
@@ -1686,9 +1692,10 @@ pub fn share_roll(frames: &[FrameStats]) -> Vec<SharedFrame> {
     if frames.is_empty() {
         return Vec::new();
     }
-    let mut levels: Vec<f64> = frames.iter().map(|f| f.rebate_level.max(1e-6)).collect();
+    let measured: Vec<_> = frames.iter().filter(|f| f.mask_measured).collect();
+    let mut levels: Vec<f64> = measured.iter().map(|f| f.rebate_level.max(1e-6)).collect();
     let median_level = percentile_f64(&mut levels, 0.50).unwrap_or(1.0).max(1e-6);
-    let ratios: Vec<[f64; 3]> = frames
+    let ratios: Vec<[f64; 3]> = measured
         .iter()
         .map(|f| {
             let g = f.base[1].max(1e-6);
@@ -1704,12 +1711,12 @@ pub fn share_roll(frames: &[FrameStats]) -> Vec<SharedFrame> {
         .map(|f| {
             let g = f.base[1].max(1e-6);
             SharedFrame {
-                base: [ratio[0] * g, g, ratio[2] * g],
+                base: if f.mask_measured { [ratio[0] * g, g, ratio[2] * g] } else { f.base },
                 gamma,
                 exposure: f.exposure,
                 fog,
                 axis,
-                drift: (f.rebate_level.max(1e-6) / median_level).log2(),
+                drift: if f.mask_measured { (f.rebate_level.max(1e-6) / median_level).log2() } else { 0.0 },
             }
         })
         .collect()
@@ -2254,6 +2261,7 @@ mod tests {
             dominant: 0.0,
             bins: vec![],
             rebate_black: true,
+            mask_measured: true,
             d_lo: 0.0,
             d_hi: 1.0,
             fog: [0.0, 0.0, 0.10],
@@ -2281,6 +2289,46 @@ mod tests {
         assert_eq!(shared[0].axis, shared[1].axis, "one gray axis for the roll");
         assert_eq!(shared[0].fog, shared[1].fog);
         assert!(shared[1].drift < -DRIFT_WARN, "drift {}", shared[1].drift);
+    }
+
+    #[test]
+    fn a_frame_without_a_measured_mask_keeps_its_base() {
+        let measured = FrameStats {
+            base: [0.80, 0.40, 0.20],
+            gamma: [1.0, 1.0, 1.0],
+            exposure: 0.2,
+            rebate_level: 0.40,
+            dominant: 0.0,
+            bins: vec![],
+            rebate_black: true,
+            mask_measured: true,
+            d_lo: 0.0,
+            d_hi: 1.0,
+            fog: [0.0; 3],
+            axis: [1.0; 3],
+            white: [0.0; 3],
+            mid_a: 0.0,
+            mid_b: 0.0,
+            grade: 1.0,
+        };
+        let bare = FrameStats { mask_measured: false, base: [0.50, 0.50, 0.50], rebate_level: 0.50, ..measured.clone() };
+        let shared = share_roll(&[measured.clone(), bare.clone(), bare.clone()]);
+        let ratio = shared[0].base[0] / shared[0].base[1];
+        assert!((ratio - 2.0).abs() < 1e-6, "the unmeasured bases must not move the shared ratio, got {ratio}");
+        assert_eq!(shared[1].base, [0.50, 0.50, 0.50]);
+        assert_eq!(shared[2].base, [0.50, 0.50, 0.50]);
+        assert_eq!(shared[1].drift, 0.0);
+
+        let orange = [0.80f32, 0.38, 0.14];
+        let picture = [0.12f32, 0.11, 0.10];
+        let with_border = Rgb32f::from_fn(48, 36, |x, y| if x < 6 || y < 6 || x >= 42 || y >= 30 { orange } else { picture });
+        let tight = Rgb32f::filled(48, 36, picture);
+        let mut previous = Film::default();
+        previous.set_base([0.55, 0.55, 0.55]);
+        assert!(analyze_image(&with_border, &previous).stats.mask_measured);
+        let missed = analyze_image(&tight, &previous);
+        assert!(!missed.stats.mask_measured);
+        assert_eq!(missed.stats.base, [0.55, 0.55, 0.55]);
     }
 
     #[test]
