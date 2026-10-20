@@ -269,7 +269,7 @@ fn pick(s: &mut Session, p: &Value, cmd: &str, which: Pick) -> Result<Value> {
     let id = active(s, cmd)?;
     let img = scanner_image(s, id, cmd)?;
     let d0 = s.develop_of(id).unwrap_or_default();
-    let sample = film::sample(&img, x, y).ok_or_else(|| bad(cmd, "the photo has no pixels"))?;
+    let sample = film::sample(&img, x, y).map(|p| film::transmission(p, d0.film.capture)).ok_or_else(|| bad(cmd, "the photo has no pixels"))?;
     let mut d = (*d0).clone();
     match which {
         Pick::Base => {

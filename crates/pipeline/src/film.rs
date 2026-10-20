@@ -21,7 +21,7 @@
 //! a typical residual of a wide filter against a narrow one, not a measured stock.
 
 use lightcraft_color::luminance_2020;
-use lightcraft_develop::{Film, FilmFrame, FilmIntent, FilmScan, FilmStock};
+use lightcraft_develop::{Film, FilmCapture, FilmFrame, FilmIntent, FilmScan, FilmStock};
 use lightcraft_geom::{Affine, CropGeometry, Point, Rect};
 use lightcraft_raster::Rgb32f;
 
@@ -153,14 +153,7 @@ impl FilmKernel {
     }
 
     pub fn apply(&self, mut t: [f32; 3]) -> [f32; 3] {
-        for c in &mut t {
-            if !c.is_finite() || *c < 0.0 {
-                *c = 0.0;
-            }
-            if self.capture > 1.001 {
-                *c = c.powf(self.capture);
-            }
-        }
+        t = t.map(|c| capture_channel(c, self.capture));
         if (self.presat - 1.0).abs() > 1e-6 {
             let y = (t[0] + t[1] + t[2]) / 3.0;
             for c in &mut t {
@@ -368,9 +361,31 @@ pub fn apply(img: &mut Rgb32f, film: &Film) {
     });
 }
 
-/// Density of a 5×5 neighborhood, after the mask and the dye correction.
+/// The scan encoding, as [`FilmKernel::apply`] removes it. Linear is unchanged. Gamma 1.8 and 2.2
+/// raise each stored channel to that power, so a measurement and the print see one transmission.
+pub fn transmission(sample: [f64; 3], capture: FilmCapture) -> [f64; 3] {
+    let g = capture.gamma() as f32;
+    sample.map(|v| capture_channel(v as f32, g) as f64)
+}
+
+fn capture_channel(c: f32, gamma: f32) -> f32 {
+    if !c.is_finite() || c < 0.0 {
+        return 0.0;
+    }
+    if gamma > 1.001 { c.powf(gamma) } else { c }
+}
+
+fn linearize_capture(img: &Rgb32f, capture: FilmCapture) -> Option<Rgb32f> {
+    let g = capture.gamma() as f32;
+    if g <= 1.001 {
+        return None;
+    }
+    Some(Rgb32f::from_fn(img.width, img.height, |x, y| img.get(x, y).map(|c| capture_channel(c, g))))
+}
+
+/// Density of a 5×5 neighborhood, after the scan encoding, the mask, and the dye correction.
 pub fn density_at(img: &Rgb32f, x: f64, y: f64, film: &Film) -> [f64; 3] {
-    let p = sample(img, x, y).unwrap_or([0.0; 3]);
+    let p = transmission(sample(img, x, y).unwrap_or([0.0; 3]), film.capture);
     density_rgb(p.map(|v| v as f32), &film.base(), &film.gamma(), !film.stock.mono(), film.scan)
 }
 
@@ -1038,6 +1053,8 @@ fn measure(img: &Rgb32f, film: &Film) -> FrameStats {
     if img.width == 0 || img.height == 0 {
         return empty;
     }
+    let linear = linearize_capture(img, film.capture);
+    let img = linear.as_ref().unwrap_or(img);
     let mut interior = Vec::new();
     for (i, p) in img.data.iter().enumerate() {
         let x = (i % img.width) as f64 / img.width as f64;
@@ -1089,6 +1106,8 @@ pub fn place_keeping_axis(img: &Rgb32f, film: &Film) -> Placement {
 }
 
 fn place_inner(img: &Rgb32f, film: &Film, locked: Option<([f64; 3], [f64; 3])>) -> Placement {
+    let linear = linearize_capture(img, film.capture);
+    let img = linear.as_ref().unwrap_or(img);
     let mut interior = Vec::new();
     if img.width > 0 && img.height > 0 {
         for (i, p) in img.data.iter().enumerate() {
@@ -2384,6 +2403,38 @@ mod tests {
         let guessed = analyze_image(&orange_inside, &previous);
         assert!(!guessed.stats.mask_measured, "orange in the picture is not a border");
         assert_eq!(guessed.stats.base, [0.55, 0.55, 0.55]);
+    }
+
+    #[test]
+    fn a_gamma_encoded_scan_measures_the_transmission_the_print_uses() {
+        let orange = [0.80f32, 0.38, 0.14];
+        let img = Rgb32f::from_fn(48, 36, |x, y| {
+            if x < 6 || y < 6 || x >= 42 || y >= 30 {
+                orange
+            } else {
+                let d = 0.25 + 0.6 * (x - 6) as f32 / 36.0;
+                orange.map(|c| c * 10f32.powf(-d))
+            }
+        });
+        let y = |p: [f32; 3]| 0.2627 * p[0] + 0.6780 * p[1] + 0.0593 * p[2];
+        for capture in [FilmCapture::Gamma18, FilmCapture::Gamma22] {
+            let film = Film { capture, ..Film::default() };
+            let analysis = analyze_image(&img, &film);
+            assert!(analysis.stats.mask_measured, "{}", capture.label());
+            let lin = orange.map(|c| (c as f64).powf(capture.gamma()));
+            let base = analysis.film.base();
+            for c in 0..3 {
+                assert!((base[c] - lin[c]).abs() < 0.05, "{:?} base {base:?} linearized {lin:?}", capture);
+            }
+            let mask = FilmKernel::from_film(&analysis.film).apply(orange);
+            assert!(y(mask) < 0.08, "{} rebate stays black {mask:?} base {base:?}", capture.label());
+            let picked = transmission(orange.map(|v| v as f64), capture);
+            for c in 0..3 {
+                assert!((base[c] - picked[c]).abs() < 0.05, "a border click stores {picked:?}, the print uses {base:?}");
+            }
+        }
+        let linear = analyze_image(&img, &Film::default());
+        assert!((linear.film.base()[0] - orange[0] as f64).abs() < 0.05, "linear keeps the file value {:?}", linear.film.base());
     }
 
     #[test]
