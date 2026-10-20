@@ -3,12 +3,19 @@
 ## 2026-10-18
 
 ### Tethered capture (Sony, macOS)
-- **File ▸ Start Tethered Capture** talks to a Sony camera in PC Remote (the A7 III profile). The loupe shows the
-  live view, and the bar under it changes aperture, shutter and ISO, turns on the focus magnifier, and shoots.
-  The raw is imported and selected. No Sony app is required. This has not yet been confirmed on a plugged-in body.
-  Canon, Nikon, and Windows / Linux are not in this build.
+- **File ▸ Start Tethered Capture** talks to a Sony camera in PC Remote. Confirmed on an A7 III (ILCE-7M3): the loupe
+  shows the live view, the focus magnifier moves that view, and the bar changes aperture, shutter, ISO and white
+  balance and shoots. A shot from the computer or the camera is imported and selected. No Sony app is required.
+  Unplugging clears PC Remote, and starting again while the camera is already in PC Remote connects. Stop and quit
+  leave the camera in PC Remote until the cable is unplugged. Choosing a stop from the list steps there one click
+  at a time. Other Sony bodies are untested. Canon, Nikon, PTP 3, and Windows / Linux are not in this build.
 
 ## 2026-10-14
+
+### Model downloads time out on a name that doesn't resolve
+- Model downloads (AI denoise, faces, SAM) give up on a server name that doesn't resolve within the connect timeout,
+  and Cancel stops a download that is still looking the name up (issue #1532). The lookup used to block with no time
+  limit, and each of a server's addresses then got the whole connect timeout of its own.
 
 ### Lightroom radial masks on the right side
 - Radial masks brought over from Lightroom Classic (catalog import, XMP sidecars, edits inside DNGs and presets) now

@@ -1,6 +1,6 @@
 # Hardware parity
 
-> **Last reviewed:** 2026-10-17 · **Last updated:** 2026-10-17 · **Change:** minor (Sony tether on macOS, not yet confirmed on a body) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
+> **Last reviewed:** 2026-10-19 · **Last updated:** 2026-10-19 · **Change:** patch (Sony tether confirmed on an A7 III; Stop leaves PC Remote until unplug) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
 
 What Lightroom does with the machine's hardware, per platform, and what LightCraft does. Sources:
 [gpu-pipeline.md](gpu-pipeline.md), [display-profiles.md](display-profiles.md), [denoise.md](denoise.md),
@@ -17,7 +17,7 @@ What Lightroom does with the machine's hardware, per platform, and what LightCra
 | Pen pressure / tilt (brush masks) | ✅ pressure for size / flow | ⬜ winit reports no tablet pressure on macOS | 🟡 pen force from winit touch events (untested on a tablet) | ⬜ winit has no X11 / Wayland tablet input | 🟡 pointer-event force where winit passes it | 🟡 brush size and flow follow pen pressure wherever egui gets a touch force (Brush ▸ Pen Pressure); no tilt; macOS / Linux tablets wait on winit |
 | Trackpad gestures | pinch zoom, pan | ✅ pinch, two-finger pan | 🟡 (winit) | 🟡 | 🟡 | ✅ on macOS |
 | Card readers / cameras as import sources | ✅ (devices panel, eject after import) | ✅ mounted volumes with DCIM | ✅ | ✅ | — | 🟡 no eject-after-import check, no MTP / PTP phones |
-| Tethered capture | ✅ Classic (Canon, Nikon, Sony, Leica) | 🟡 Sony PTP 2 (A7 III / PC Remote) through Image Capture: live view, exposure, shutter, import. Not confirmed on a body | ⬜ | ⬜ | — | 🟡 |
+| Tethered capture | ✅ Classic (Canon, Nikon, Sony, Leica) | 🟡 Sony PTP 2 through Image Capture, confirmed on an A7 III: live view, magnifier, exposure, shutter, import. Stop leaves PC Remote until unplug | ⬜ | ⬜ | — | 🟡 |
 | Printers | ✅ Print module, printer colour management | ⬜ (PDF contact sheets only) | ⬜ | ⬜ | — | ⬜ |
 | Control surfaces (MIDI / Loupedeck via plug-ins) | via SDK plug-ins | control channel and MCP can drive every command | same | same | — | 🟡 different mechanism; no MIDI mapping |
 | Multi-core CPU | ✅ | ✅ worker pools, parallel JPEG decode, parallel import copy | ✅ | ✅ | single thread | ✅ |
@@ -27,7 +27,7 @@ What Lightroom does with the machine's hardware, per platform, and what LightCra
 
 **~40% ready** (estimated): the GPU editing path is real and fast (measured: 24 MP exposure drag
 3.9 ms on GPU vs 22–42 ms CPU; NR drag 18 ms vs 301–471 ms), but HDR display, pen pressure,
-printing, automatic monitor profiles and neural-engine inference are missing, and tethering is only the macOS Sony path (not yet confirmed on a body). GPU
+printing, automatic monitor profiles and neural-engine inference are missing, and tethering is the macOS Sony path, confirmed on an A7 III (Stop leaves PC Remote until unplug). GPU
 correctness is proven on Apple GPUs and on one AMD GPU on Linux (Radeon 8060S, Vulkan / RADV: the
 equivalence suite passes with the same max 1–2 LSB as on Metal, [gpu-pipeline.md](gpu-pipeline.md#correctness-cpu-oracle-and-equivalence-tests)).
 NVIDIA, Intel and Windows DX12 still rely on user reports.
@@ -40,7 +40,7 @@ NVIDIA, Intel and Windows DX12 still rely on user reports.
 | OS monitor profile: Windows WCS (an FFI helper crate, like `crates/sysmem`), follow the window across displays on Linux | 4–8 | multi-monitor setup |
 | Pen pressure for brush masks: done where winit reports a touch force; macOS and Linux tablets need winit tablet events (or a pure-Rust tablet layer) | 3–8 | a tablet |
 | Remaining stages on GPU (defringe, spot removal, masks) | 10–20 | |
-| Tethered capture: confirm the Sony macOS path on a body, then Canon, Nikon, PTP 3, Linux and Windows | 15–30 | cameras (human) |
+| Tethered capture: other Sony bodies, then Canon, Nikon, PTP 3, Linux and Windows (the A7 III path is confirmed) | 15–30 | cameras (human) |
 | Printing with colour management | 15–25 | printers (human) |
 | Neural-engine / DirectML inference for AI features | 10–20 | depends on the AI model decision |
 | **Total** | **80–150 h** (the core set for beta, HDR display + monitor profile + pen pressure: 20–40 h) | |
@@ -49,6 +49,7 @@ NVIDIA, Intel and Windows DX12 still rely on user reports.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-19 | patch | Tethered capture: confirmed on a Sony A7 III. Stop leaves PC Remote until unplug; other brands and systems remain |
 | 2026-10-17 | minor | Tethered capture: Sony PTP 2 on macOS (Image Capture). Not confirmed on a body; other brands and systems remain |
 | 2026-10-12 | minor | Monitor profile: Linux reads the display profile from colord; macOS row reflects #787 |
 | 2026-10-12 | minor | CPU ↔ GPU equivalence suite run on an AMD Radeon 8060S (Vulkan, RADV, Linux): 16 tests / 135 cases pass, max 2 LSB, mean ≤ 0.0003; first GPU verified outside Apple |
