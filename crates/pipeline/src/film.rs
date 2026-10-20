@@ -1127,60 +1127,51 @@ impl Placement {
 }
 
 fn mask_base(img: &Rgb32f, frame: &FilmFrame, stock: FilmStock, interior: &[[f32; 3]], fallback: [f64; 3]) -> ([f64; 3], bool, bool) {
+    // The whole scan has no picture edge. Blank film is what touches the scan edge, same as frame
+    // detection. Orange that sits only in the picture is not a border.
+    let edge = if frame.is_full() { Some(edge_rebate(img, stock)) } else { None };
     let mut outside_orange = Vec::new();
-    let mut any_orange = Vec::new();
     let mut outside_clear = Vec::new();
-    let mut any_clear = Vec::new();
     let mut outside_pale = Vec::new();
-    let mut any_pale = Vec::new();
     let mut outside_bw = Vec::new();
     for (i, p) in img.data.iter().enumerate() {
-        let x = (i % img.width) as f64 / img.width as f64;
-        let y = (i / img.width) as f64 / img.height.max(1) as f64;
-        let inside = inside_frame(frame, x + 0.5 / img.width as f64, y + 0.5 / img.height.max(1) as f64);
+        let on_border = if let Some(edge) = &edge {
+            edge.get(i).copied().unwrap_or(false)
+        } else {
+            let x = (i % img.width) as f64 / img.width as f64;
+            let y = (i / img.width) as f64 / img.height.max(1) as f64;
+            !inside_frame(frame, x + 0.5 / img.width as f64, y + 0.5 / img.height.max(1) as f64)
+        };
+        if !on_border {
+            continue;
+        }
         match stock {
             FilmStock::ColorNeg if is_mask_orange(*p) => {
-                any_orange.push(*p);
+                outside_orange.push(*p);
                 if is_clear_film(*p) {
-                    any_clear.push(*p);
-                }
-                if !inside {
-                    outside_orange.push(*p);
-                    if is_clear_film(*p) {
-                        outside_clear.push(*p);
-                    }
+                    outside_clear.push(*p);
                 }
             }
-            FilmStock::ColorNeg if is_pale_rebate(*p) => {
-                any_pale.push(*p);
-                if !inside {
-                    outside_pale.push(*p);
-                }
-            }
-            FilmStock::BwNeg if !inside && !is_light_table(*p) && luminance_2020(*p) > 0.35 => outside_bw.push(*p),
+            FilmStock::ColorNeg if is_pale_rebate(*p) => outside_pale.push(*p),
+            FilmStock::BwNeg if !is_light_table(*p) && luminance_2020(*p) > 0.35 => outside_bw.push(*p),
             _ => {}
         }
     }
     if stock == FilmStock::ColorNeg {
-        // Unexposed film, from the bright clear tail, preferring the strongest orange in that
-        // tail. A darker base shrinks every density and the grade then blows the print out.
-        // A paler base (too much blue) leaves the print cold. A miss keeps the base already
-        // measured, rather than a white highlight.
+        // Unexposed film outside the frame, from the bright clear tail, preferring the strongest
+        // orange in that tail. A darker base shrinks every density and the grade then blows the
+        // print out. A paler base (too much blue) leaves the print cold. Orange in the picture is
+        // not a border, so a miss keeps the base already measured.
         let chosen = if outside_clear.len() >= 8 {
             clearest_orange(&outside_clear)
-        } else if any_clear.len() >= 8 {
-            clearest_orange(&any_clear)
         } else if outside_orange.len() >= 8 {
             clearest_orange(&outside_orange)
-        } else if any_orange.len() >= 8 {
-            clearest_orange(&any_orange)
         } else if outside_pale.len() >= 8 {
             border_color(&outside_pale)
         } else {
-            border_color(&any_pale)
+            None
         };
-        let mask_measured = chosen.is_some();
-        return (chosen.unwrap_or(fallback), true, mask_measured);
+        return (chosen.unwrap_or(fallback), true, chosen.is_some());
     }
     if stock == FilmStock::BwNeg
         && let Some(b) = bright_tail(&outside_bw, 0.90)
@@ -1193,6 +1184,57 @@ fn mask_base(img: &Rgb32f, frame: &FilmFrame, stock: FilmStock, interior: &[[f32
         return (b, false, false);
     }
     bright_tail(interior, 0.97).map(|b| (b, false, false)).unwrap_or(([1.0, 1.0, 1.0], false, false))
+}
+
+/// Film connected to the scan edge. A patch of the same color in the picture is left out.
+fn edge_rebate(img: &Rgb32f, stock: FilmStock) -> Vec<bool> {
+    let w = img.width;
+    let h = img.height;
+    let Some(n) = w.checked_mul(h) else {
+        return Vec::new();
+    };
+    let mut rebate = vec![false; n];
+    if w < 2 || h < 2 {
+        return rebate;
+    }
+    let mut queue = std::collections::VecDeque::new();
+    for y in 0..h {
+        for x in 0..w {
+            if x != 0 && y != 0 && x + 1 != w && y + 1 != h {
+                continue;
+            }
+            let i = y * w + x;
+            if img.data.get(i).is_some_and(|p| is_outside(*p, stock, true)) {
+                if let Some(slot) = rebate.get_mut(i) {
+                    *slot = true;
+                }
+                queue.push_back(i);
+            }
+        }
+    }
+    while let Some(i) = queue.pop_front() {
+        let x = i % w;
+        let y = i / w;
+        for (dx, dy) in [(-1isize, 0), (1, 0), (0, -1), (0, 1)] {
+            let nx = x as isize + dx;
+            let ny = y as isize + dy;
+            if nx < 0 || ny < 0 || nx >= w as isize || ny >= h as isize {
+                continue;
+            }
+            let j = ny as usize * w + nx as usize;
+            if rebate.get(j).copied().unwrap_or(true) {
+                continue;
+            }
+            let rim = in_rim(nx.max(0) as usize, ny.max(0) as usize, w, h);
+            if img.data.get(j).is_some_and(|p| is_outside(*p, stock, rim))
+                && let Some(slot) = rebate.get_mut(j)
+            {
+                *slot = true;
+                queue.push_back(j);
+            }
+        }
+    }
+    rebate
 }
 
 /// Clear film near the brightest sample, averaged from the half with the lowest blue/red.
@@ -2221,7 +2263,7 @@ mod tests {
     }
 
     #[test]
-    fn rebate_inside_the_frame_does_not_blow_the_picture() {
+    fn a_rebate_outside_the_picture_does_not_blow_the_print() {
         let orange = [0.80f32, 0.38, 0.14];
         let img = Rgb32f::from_fn(80, 60, |x, y| {
             if (25..55).contains(&x) && (18..42).contains(&y) {
@@ -2231,7 +2273,14 @@ mod tests {
                 orange
             }
         });
-        let stats = measure(&img, &Film::default());
+        let film = Film {
+            frame: FilmFrame {
+                corners: [[25.0 / 80.0, 18.0 / 60.0], [55.0 / 80.0, 18.0 / 60.0], [55.0 / 80.0, 42.0 / 60.0], [25.0 / 80.0, 42.0 / 60.0]],
+            },
+            ..Film::default()
+        };
+        let stats = measure(&img, &film);
+        assert!(stats.mask_measured);
         let mut film = Film { enabled: true, ..Film::default() };
         film.set_base(stats.base);
         film.d_lo = stats.d_lo;
@@ -2329,6 +2378,12 @@ mod tests {
         let missed = analyze_image(&tight, &previous);
         assert!(!missed.stats.mask_measured);
         assert_eq!(missed.stats.base, [0.55, 0.55, 0.55]);
+
+        let warm = [0.80f32, 0.38, 0.14];
+        let orange_inside = Rgb32f::from_fn(48, 36, |x, y| if (20..28).contains(&x) && (14..22).contains(&y) { warm } else { picture });
+        let guessed = analyze_image(&orange_inside, &previous);
+        assert!(!guessed.stats.mask_measured, "orange in the picture is not a border");
+        assert_eq!(guessed.stats.base, [0.55, 0.55, 0.55]);
     }
 
     #[test]
