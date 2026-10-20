@@ -1,7 +1,8 @@
-//! Tethered capture for a Sony body in PC Remote.
+//! Tethered capture.
 //!
-//! The desktop app pumps [`lightcraft_cameras::Endpoint`] on the UI thread. A worker thread speaks
-//! Sony PTP 2 and pushes stills here; the pump imports them. Tests install a scripted camera and
+//! The desktop app pumps [`lightcraft_cameras::Endpoint`] on the UI thread. That pipe is the
+//! operating system. A worker asks `lightcraft_ptp` which brand claims the camera, speaks that
+//! session, and pushes stills here. The pump imports them. Tests install a scripted camera and
 //! never touch USB.
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -12,11 +13,11 @@ use std::time::Duration;
 use lightcraft_catalog::PhotoId;
 #[cfg(any(test, all(target_os = "macos", not(target_arch = "wasm32"))))]
 use lightcraft_ptp::Error as PtpError;
+use lightcraft_ptp::{CameraSession, Captured, Dial};
 #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
-use lightcraft_ptp::Reply;
+use lightcraft_ptp::{Reply, Transport};
 #[cfg(test)]
-use lightcraft_ptp::Sim;
-use lightcraft_ptp::{Captured, Dial, SonySession, Transport};
+use lightcraft_ptp::{Sim, SonySession};
 use serde_json::{Value, json};
 
 use crate::activity::Activity;
@@ -25,8 +26,6 @@ use crate::activity::{Cancel, TaskGuard};
 use crate::import::{ImportMode, ImportOptions, import_with};
 use crate::view::Selection;
 use crate::{EngineError, Result, Session};
-
-const SONY: u16 = 0x054C;
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
@@ -406,7 +405,7 @@ impl Hub {
 
     #[cfg(not(all(target_os = "macos", not(target_arch = "wasm32"))))]
     fn begin_live(&mut self, _activity: Activity) -> Result<()> {
-        Err(EngineError::Other("tethered capture on this system isn't available yet. It needs macOS and a Sony camera in PC Remote.".into()))
+        Err(EngineError::Other("tethered capture on this system isn't available yet. It needs a Sony camera in PC Remote.".into()))
     }
 
     #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
@@ -441,7 +440,7 @@ impl Default for Hub {
     }
 }
 
-fn remember<T: Transport>(shared: &Mutex<Inner>, cam: &SonySession<T>) {
+fn remember(shared: &Mutex<Inner>, cam: &dyn CameraSession) {
     let mut g = lock(shared);
     g.connected = true;
     g.model = cam.model().to_string();
@@ -454,8 +453,8 @@ fn remember<T: Transport>(shared: &Mutex<Inner>, cam: &SonySession<T>) {
     g.shutter_choices = cam.choices(Dial::Shutter);
     g.iso_choices = cam.choices(Dial::Iso);
     g.white_balance_choices = if cam.has_white_balance() { cam.choices(Dial::WhiteBalance) } else { Vec::new() };
-    g.magnified = cam.magnified;
-    g.hint = cam.hint.clone();
+    g.magnified = cam.magnified();
+    g.hint = cam.hint().to_string();
 }
 
 /// Import one captured still and select it. Returns the new photo id.
@@ -545,18 +544,25 @@ fn worker(client: lightcraft_cameras::Client, shared: Arc<Mutex<Inner>>, cancel:
 }
 
 #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
-fn worker_session(client: &lightcraft_cameras::Client, shared: &Mutex<Inner>, cancel: &AtomicBool, guard: TaskGuard, opened: &AtomicBool) -> std::result::Result<(), String> {
+fn worker_session(
+    client: &lightcraft_cameras::Client,
+    shared: &Mutex<Inner>,
+    cancel: &AtomicBool,
+    guard: TaskGuard,
+    opened: &AtomicBool,
+) -> std::result::Result<(), String> {
     let cam = find_sony(client, cancel)?;
     if cancel.load(Ordering::Relaxed) {
         return Ok(());
     }
-    client.open(Some(cam.id), Duration::from_secs(20))?;
+    client.open(Some(cam.id.clone()), Duration::from_secs(20))?;
     opened.store(true, Ordering::Relaxed);
-    let mut session = SonySession::open(Bridge { client: client.clone(), txn: 1, budget_ms: 8_000 }).map_err(|e| e.message().to_string())?;
+    let mut session = lightcraft_ptp::open(cam.vendor, &cam.name, Bridge { client: client.clone(), txn: 1, budget_ms: 8_000 })
+        .map_err(|e| e.message().to_string())?;
     // The handshake snapshot can lag the dials. One more read before the bar is drawn.
     session.set_budget(3_000);
     let _ = session.refresh();
-    remember(shared, &session);
+    remember(shared, session.as_ref());
     guard.detail(session.model());
     // Connected tether is the bar on the loupe. Leaving this row up looks like a job that never finishes.
     drop(guard);
@@ -634,7 +640,7 @@ fn worker_session(client: &lightcraft_cameras::Client, shared: &Mutex<Inner>, ca
             Ok(None) => {}
             Err(e) => lock(shared).error = Some(e.message().to_string()),
         }
-        remember(shared, &session);
+        remember(shared, session.as_ref());
         std::thread::sleep(Duration::from_millis(40));
     }
     let _ = session.close();
@@ -651,7 +657,7 @@ fn find_sony(client: &lightcraft_cameras::Client, cancel: &AtomicBool) -> std::r
             return Err("stopped".into());
         }
         let list = client.list(Duration::from_secs(2))?;
-        if let Some(cam) = list.iter().find(|c| c.vendor == SONY || is_sony_name(&c.name)) {
+        if let Some(cam) = list.iter().find(|c| lightcraft_ptp::claims(c.vendor, &c.name)) {
             return Ok(cam.clone());
         }
         if let Some(cam) = list.first() {
@@ -660,15 +666,9 @@ fn find_sony(client: &lightcraft_cameras::Client, cancel: &AtomicBool) -> std::r
         std::thread::sleep(Duration::from_millis(250));
     }
     match other {
-        Some(name) => Err(format!("{name} isn't a Sony camera this tether can drive")),
-        None => Err("no camera in PC Remote. On the camera set USB Connection to PC Remote.".into()),
+        Some(name) => Err(lightcraft_ptp::refused(&name)),
+        None => Err(lightcraft_ptp::waiting_hint().into()),
     }
-}
-
-#[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
-fn is_sony_name(name: &str) -> bool {
-    let n = name.to_ascii_lowercase();
-    n.contains("sony") || n.contains("ilce")
 }
 
 #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
@@ -696,13 +696,10 @@ impl Transport for Bridge {
     }
 
     fn transact(&mut self, code: u16, params: &[u32], outgoing: Option<&[u8]>) -> lightcraft_ptp::Result<Reply> {
-        // 0x9207's two bytes are one click: +1, −1, or a button. A shutter word or an ISO does not pass.
-        if code == 0x9207 && !lightcraft_ptp::control_click(outgoing.unwrap_or(&[])) {
-            return Err(PtpError::new("refusing a camera control that is not one click"));
-        }
         let cmd = lightcraft_ptp::encode_command(code, self.txn, params)?;
         self.txn = self.txn.wrapping_add(1).max(1);
-        let (response, data) = self.client.command(cmd, outgoing.map(|d| d.to_vec()), Duration::from_millis(self.budget_ms)).map_err(PtpError::new)?;
+        let (response, data) =
+            self.client.command(cmd, outgoing.map(|d| d.to_vec()), Duration::from_millis(self.budget_ms)).map_err(PtpError::new)?;
         let packet = lightcraft_ptp::decode(&response)?;
         Ok(Reply { code: packet.code, params: packet.params, data })
     }

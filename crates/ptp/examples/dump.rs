@@ -21,7 +21,12 @@ fn main() {
                 match list.iter().find(|p| p.code == code) {
                     Some(p) => println!(
                         "  {code:#06x} type {:#06x} current {} writable {} enabled {} values {} range {:?}",
-                        p.datatype, p.current, p.writable, p.enabled, p.enums.len(), p.minimum.zip(p.maximum)
+                        p.datatype,
+                        p.current,
+                        p.writable,
+                        p.enabled,
+                        p.enums.len(),
+                        p.minimum.zip(p.maximum)
                     ),
                     None => println!("  {code:#06x} absent"),
                 }

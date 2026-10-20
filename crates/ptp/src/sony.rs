@@ -5,7 +5,10 @@
 
 use crate::info::{self, DeviceInfo};
 use crate::props::{self, Prop, step_enum};
+use crate::session::{CameraSession, Captured, Dial};
 use crate::{Error, Result};
+
+pub use crate::link::{Reply, Transport};
 
 pub const LIVE_VIEW_OBJECT: u32 = 0xFFFF_C002;
 pub const CAPTURED_OBJECT: u32 = 0xFFFF_C001;
@@ -55,54 +58,13 @@ const BOTH_DEST: u64 = 0x11;
 const INITIATOR_VERSION: u32 = 0x00C8;
 const READY_BIT: u64 = 0x8000;
 
-/// One PTP transaction. `outgoing` is the data phase the initiator sends (a property write).
-/// The reply's `data` is the data phase the camera sends. Connect phases do not send data.
-pub trait Transport {
-    fn transact(&mut self, code: u16, params: &[u32], outgoing: Option<&[u8]>) -> Result<Reply>;
-
-    /// How long the next command may wait, in milliseconds. The default ignores it.
-    fn set_budget(&mut self, _millis: u64) {}
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Reply {
-    pub code: u16,
-    pub params: Vec<u32>,
-    pub data: Vec<u8>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Dial {
-    Aperture,
-    Shutter,
-    Iso,
-    WhiteBalance,
-}
-
-impl Dial {
-    pub fn code(self) -> u16 {
-        match self {
-            Dial::Aperture => PROP_FNUMBER,
-            Dial::Shutter => PROP_SHUTTER,
-            Dial::Iso => PROP_ISO,
-            Dial::WhiteBalance => PROP_WHITE_BALANCE,
-        }
+fn dial_prop(dial: Dial) -> u16 {
+    match dial {
+        Dial::Aperture => PROP_FNUMBER,
+        Dial::Shutter => PROP_SHUTTER,
+        Dial::Iso => PROP_ISO,
+        Dial::WhiteBalance => PROP_WHITE_BALANCE,
     }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Dial::Aperture => "aperture",
-            Dial::Shutter => "shutter",
-            Dial::Iso => "ISO",
-            Dial::WhiteBalance => "white balance",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Captured {
-    pub name: String,
-    pub bytes: Vec<u8>,
 }
 
 pub struct SonySession<T> {
@@ -170,7 +132,7 @@ impl<T: Transport> SonySession<T> {
     }
 
     pub fn text(&self, dial: Dial) -> Option<String> {
-        let prop = self.prop(dial.code())?;
+        let prop = self.prop(dial_prop(dial))?;
         Some(match dial {
             Dial::Aperture => format_aperture(prop.current),
             Dial::Shutter => format_shutter(prop.current),
@@ -210,10 +172,10 @@ impl<T: Transport> SonySession<T> {
     /// does move them, but the data is one click (`+1` / `-1`), not the speed itself. The speed's
     /// low half is a repeat count (1/40 is 40), which runs the shutter to the end and keeps going.
     pub fn set_dial(&mut self, dial: Dial, step: i32, absolute: Option<u64>) -> Result<u64> {
-        if self.runaway && absolute.is_none() && self.prop(dial.code()).is_some_and(|p| p.flags & 0x01 == 0) {
+        if self.runaway && absolute.is_none() && self.prop(dial_prop(dial)).is_some_and(|p| p.flags & 0x01 == 0) {
             return Err(Error::new("exposure clicks are stopped because the last one jumped several stops"));
         }
-        let prop = self.prop(dial.code()).cloned().ok_or_else(|| Error::new(format!("this camera has no {}", dial.label())))?;
+        let prop = self.prop(dial_prop(dial)).cloned().ok_or_else(|| Error::new(format!("this camera has no {}", dial.label())))?;
         if let Some(target) = absolute
             && prop.flags & 0x01 == 0
         {
@@ -273,7 +235,7 @@ impl<T: Transport> SonySession<T> {
 
     /// Values the dial can land on, in menu order, with the labels the bar shows.
     pub fn choices(&self, dial: Dial) -> Vec<(u64, String)> {
-        let Some(prop) = self.prop(dial.code()) else { return Vec::new() };
+        let Some(prop) = self.prop(dial_prop(dial)) else { return Vec::new() };
         let mut values = ladder(prop, dial);
         if !values.contains(&prop.current) {
             values.insert(0, prop.current);
@@ -436,7 +398,7 @@ impl<T: Transport> SonySession<T> {
         if matches!(mode, None | Some(1)) {
             return;
         }
-        let locked = [Dial::Aperture, Dial::Shutter, Dial::Iso].iter().any(|dial| self.prop(dial.code()).is_some_and(|p| p.availability == 2));
+        let locked = [Dial::Aperture, Dial::Shutter, Dial::Iso].iter().any(|dial| self.prop(dial_prop(*dial)).is_some_and(|p| p.availability == 2));
         if !locked {
             return;
         }
@@ -609,11 +571,7 @@ impl<T: Transport> SonySession<T> {
         let reply = self.io.transact(SDIO_CONTROL_DEVICE, &[u32::from(prop.code)], Some(&bytes));
         self.io.set_budget(8_000);
         let reply = reply?;
-        if reply.code == OK {
-            Ok(())
-        } else {
-            Err(Error::new(format!("{} was refused ({:#06x})", op_name(SDIO_CONTROL_DEVICE), reply.code)))
-        }
+        if reply.code == OK { Ok(()) } else { Err(Error::new(format!("{} was refused ({:#06x})", op_name(SDIO_CONTROL_DEVICE), reply.code))) }
     }
 
     fn one_write(&mut self, op: u16, code: u32, bytes: &[u8]) -> Result<()> {
@@ -672,6 +630,60 @@ impl<T: Transport> SonySession<T> {
     }
 }
 
+impl<T: Transport> CameraSession for SonySession<T> {
+    fn model(&self) -> &str {
+        SonySession::model(self)
+    }
+    fn text(&self, dial: Dial) -> Option<String> {
+        SonySession::text(self, dial)
+    }
+    fn has_white_balance(&self) -> bool {
+        SonySession::has_white_balance(self)
+    }
+    fn exposure_comp(&self) -> Option<String> {
+        SonySession::exposure_comp(self)
+    }
+    fn choices(&self, dial: Dial) -> Vec<(u64, String)> {
+        SonySession::choices(self, dial)
+    }
+    fn magnified(&self) -> bool {
+        self.magnified
+    }
+    fn hint(&self) -> &str {
+        &self.hint
+    }
+    fn set_budget(&mut self, millis: u64) {
+        SonySession::set_budget(self, millis);
+    }
+    fn refresh(&mut self) -> Result<()> {
+        SonySession::refresh(self)
+    }
+    fn set_dial(&mut self, dial: Dial, step: i32, absolute: Option<u64>) -> Result<u64> {
+        SonySession::set_dial(self, dial, step, absolute)
+    }
+    fn magnify(&mut self, on: bool) -> Result<()> {
+        SonySession::magnify(self, on)
+    }
+    fn nudge(&mut self, direction: &str) -> Result<()> {
+        SonySession::nudge(self, direction)
+    }
+    fn autofocus(&mut self) -> Result<()> {
+        SonySession::autofocus(self)
+    }
+    fn capture(&mut self) -> Result<Captured> {
+        SonySession::capture(self)
+    }
+    fn take_new_file(&mut self) -> Result<Option<Captured>> {
+        SonySession::take_new_file(self)
+    }
+    fn live_jpeg(&mut self) -> Result<Option<Vec<u8>>> {
+        SonySession::live_jpeg(self)
+    }
+    fn close(&mut self) -> Result<()> {
+        SonySession::close(self)
+    }
+}
+
 fn call<T: Transport>(io: &mut T, code: u16, params: &[u32], outgoing: Option<&[u8]>) -> Result<Reply> {
     let mut last = Error::new("camera stayed busy");
     for attempt in 0..3 {
@@ -686,6 +698,14 @@ fn call<T: Transport>(io: &mut T, code: u16, params: &[u32], outgoing: Option<&[
         return Err(Error::new(format!("{} was refused ({:#06x})", op_name(code), reply.code)));
     }
     Err(last)
+}
+
+/// The operating system's list: vendor id, or a name that looks like a Sony stills body.
+pub(crate) fn claims(vendor: u16, name: &str) -> bool {
+    vendor == 0x054C || {
+        let n = name.to_ascii_lowercase();
+        n.contains("sony") || n.contains("ilce") || n.contains("ilme") || n.contains("dsc-") || n.contains("zv-")
+    }
 }
 
 fn is_sony(info: &DeviceInfo) -> bool {
@@ -898,7 +918,8 @@ fn list_index(list: &[u64], value: u64) -> Option<usize> {
 }
 
 fn step_indexed(values: &[u64], current: u64, step: i32) -> Option<u64> {
-    let idx = values.iter().position(|v| *v == current).or_else(|| values.iter().enumerate().min_by_key(|(_, v)| v.abs_diff(current)).map(|(i, _)| i))?;
+    let idx =
+        values.iter().position(|v| *v == current).or_else(|| values.iter().enumerate().min_by_key(|(_, v)| v.abs_diff(current)).map(|(i, _)| i))?;
     let next = if step < 0 { idx.checked_sub(1)? } else { idx.checked_add(1)? };
     values.get(next).copied()
 }

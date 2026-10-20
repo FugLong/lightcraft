@@ -1,6 +1,6 @@
 # Architecture
 
-> **Last reviewed:** 2026-10-17 · **Last updated:** 2026-10-17 · **Change:** minor (`ptp` and `cameras`) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
+> **Last reviewed:** 2026-10-19 · **Last updated:** 2026-10-19 · **Change:** patch (tether pipe and brand session) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
 
 How LightCraft is built today. The longer design document (`plan/architecture.md`) is local-only
 (`plan/` is gitignored); this page is the committed, current summary. Sizes are Rust lines counted
@@ -13,8 +13,8 @@ L5 depends on egui, eframe, winit or rfd, and that each crate only uses lower la
 
 | Layer | Crates (lines) | Role |
 |---|---|---|
-| L0 | `geom` (1.4k), `color` (0.9k), `raster` (0.8k), `tiff` (2.0k), `fetch` (1.4k), `sysmem` (0.1k), `cameras` | Matrices and warps, colour spaces and transfer functions, float image buffers, TIFF/IFD read and write, pinned HTTPS model downloads. Two crates use `unsafe`: `sysmem` (one FFI call, `malloc_zone_pressure_relief`) and `cameras` (Image Capture PTP on macOS; the public API is safe) |
-| L1 | `raw` (22.3k), `codecs` (7.3k), `meta` (4.3k), `develop` (2.5k), `denoise-core` (2.2k), `denoise` (2.7k), `faces` (5.3k), `scenes` (1.0k), `heif` (2.1k, optional), `ptp` | Raw decoders and demosaic, DNG colour model; standard codecs and encoders; EXIF/XMP/IPTC; the non-destructive edit model and control specs; AI denoise; face detection and recognition; procedural demo photos; HEIC; Sony Camera Control PTP 2 (`ptp`, no USB) |
+| L0 | `geom` (1.4k), `color` (0.9k), `raster` (0.8k), `tiff` (2.0k), `fetch` (1.4k), `sysmem` (0.1k), `cameras` | Matrices and warps, colour spaces and transfer functions, float image buffers, TIFF/IFD read and write, pinned HTTPS model downloads. Two crates use `unsafe`: `sysmem` (one FFI call, `malloc_zone_pressure_relief`) and `cameras` (the tether pipe; Image Capture on macOS, public API safe). A pipe lists a camera, sends one PTP transaction, and closes. It does not know a brand's opcodes. Linux and Windows pipes are not in yet |
+| L1 | `raw` (22.3k), `codecs` (7.3k), `meta` (4.3k), `develop` (2.5k), `denoise-core` (2.2k), `denoise` (2.7k), `faces` (5.3k), `scenes` (1.0k), `heif` (2.1k, optional), `ptp` | Raw decoders and demosaic, DNG colour model; standard codecs and encoders; EXIF/XMP/IPTC; the non-destructive edit model and control specs; AI denoise; face detection and recognition; procedural demo photos; HEIC. `ptp` is containers plus brand sessions and does not open USB: `Transport` is the pipe, `CameraSession` is what the app holds, and Sony Camera Control PTP 2 is the first session. Another brand is another claim and another session |
 | L2 | `pipeline` (9.8k) | The develop pipeline: scene-referred float, resolution independent; the CPU reference (oracle) for everything else |
 | L3 | `catalog` (11.0k), `gpu` (5.1k), `preview` (1.3k), `merge` (3.8k), `segment` (2.3k) | Library model and persistence; wgpu compute twin of the pipeline; thumbnail/preview cache and job pool; HDR and panorama merge; SAM 3 segmentation |
 | L4 | `engine` (53.2k) | Session, command registry (everything is a command), history, render and export jobs, import, Lightroom catalog and preset import, faces index, view-models |
@@ -77,6 +77,7 @@ the `lightcraft-gpu` tests once per backend with a hardware adapter (`LIGHTCRAFT
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-19 | patch | Tether splits into an OS pipe (`cameras`) and a brand session (`ptp`). Sony PTP 2 is the first session |
 | 2026-10-17 | minor | `ptp` (L1, Sony PTP 2, no USB) and `cameras` (L0, Image Capture on macOS; the second crate that uses `unsafe`) |
 | 2026-10-11 | minor | Quality gates: the CI machine probe, visible skips (`testkit`) and `target/ci/report.json` |
 | 2026-10-10 | major | Created from the code (crate sizes, layers, data model, rendering, control, gates) |

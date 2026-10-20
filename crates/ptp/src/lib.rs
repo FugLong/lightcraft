@@ -1,26 +1,30 @@
-//! Picture Transfer Protocol containers, and a Sony Camera Control PTP 2 session.
+//! Picture Transfer Protocol containers, and the tether protocols that speak them.
 //!
-//! Containers follow PIMA 15740 (the USB still-image class). The Sony operations are the ones in
-//! Sony's Camera Remote Command reference for Camera Control PTP 2, which is the protocol the
-//! A7 III speaks in PC Remote. PTP 3 bodies are a different profile and are not implemented here.
-//! This crate does not open USB devices.
+//! Containers follow PIMA 15740 (the USB still-image class). [`Transport`] is the operating
+//! system's pipe. [`CameraSession`] is what a brand offers the app. Sony Camera Control PTP 2
+//! (the A7 III's PC Remote profile) is the first brand. PTP 3 is a different profile and is not
+//! implemented here. This crate does not open USB devices.
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+mod brand;
 mod info;
+mod link;
 mod packet;
 mod props;
 mod read;
+mod session;
 mod sim;
 mod sony;
 
+pub use brand::{claims, open, refused, waiting_hint};
 pub use info::{DeviceInfo, device_info, object_filename, parse_device_info};
+pub use link::{Reply, Transport};
 pub use packet::{Packet, decode, encode_command};
 pub use props::{Prop, encode_props, encode_value, parse_props, step_enum};
+pub use session::{CameraSession, Captured, Dial};
 pub use sim::{Sim, TINY_JPEG};
-pub use sony::{
-    CAPTURED_OBJECT, Captured, Dial, LIVE_VIEW_OBJECT, Reply, SonySession, Transport, control_click, format_aperture, format_iso, format_shutter, jpeg_payload,
-};
+pub use sony::{CAPTURED_OBJECT, LIVE_VIEW_OBJECT, SonySession, control_click, format_aperture, format_iso, format_shutter, jpeg_payload};
 
 /// A protocol failure the caller can show. Camera bytes are treated as hostile: a short buffer,
 /// a length that does not match, or a count that would run off the end is this error, never a panic.

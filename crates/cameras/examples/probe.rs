@@ -26,10 +26,8 @@ mod mac {
 
     pub fn probe() -> Result<(), String> {
         let (client, mut endpoint) = link();
-        let worker = std::thread::Builder::new()
-            .name("probe".into())
-            .spawn(move || talk(client))
-            .map_err(|e| format!("couldn't start the probe: {e}"))?;
+        let worker =
+            std::thread::Builder::new().name("probe".into()).spawn(move || talk(client)).map_err(|e| format!("couldn't start the probe: {e}"))?;
         let start = Instant::now();
         while !worker.is_finished() && start.elapsed() < Duration::from_secs(70) {
             endpoint.spin();

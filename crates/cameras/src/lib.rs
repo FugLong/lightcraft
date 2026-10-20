@@ -24,8 +24,15 @@ type CmdResult = std::result::Result<(Vec<u8>, Vec<u8>), String>;
 #[derive(Debug)]
 enum Request {
     List(Sender<std::result::Result<Vec<CameraInfo>, String>>),
-    Open { id: Option<String>, reply: Sender<std::result::Result<(), String>> },
-    Command { bytes: Vec<u8>, data: Option<Vec<u8>>, reply: Sender<CmdResult> },
+    Open {
+        id: Option<String>,
+        reply: Sender<std::result::Result<(), String>>,
+    },
+    Command {
+        bytes: Vec<u8>,
+        data: Option<Vec<u8>>,
+        reply: Sender<CmdResult>,
+    },
     Close(Sender<std::result::Result<(), String>>),
     /// The worker stopped waiting. Drop the in-flight call so the next one, usually close, can run.
     Abandon,
@@ -405,11 +412,7 @@ mod macos {
             // An absent data phase is nil. The response container is the PTP response (type 3).
             let block = RcBlock::new(move |data: std::ptr::NonNull<NSData>, response: std::ptr::NonNull<NSData>, error: *mut NSError| {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    if error.is_null() {
-                        Ok((data_bytes(response), data_bytes(data)))
-                    } else {
-                        Err(ns_error(unsafe { &*error }))
-                    }
+                    if error.is_null() { Ok((data_bytes(response), data_bytes(data))) } else { Err(ns_error(unsafe { &*error })) }
                 }));
                 let result = match result {
                     Ok(r) => r,

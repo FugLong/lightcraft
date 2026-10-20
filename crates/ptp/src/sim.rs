@@ -133,7 +133,9 @@ impl Transport for Sim {
                 if let Some(prop) = self.prop_mut(ctrl as u16) {
                     let value = match prop.datatype {
                         props::TY_U16 | props::TY_I16 => outgoing.and_then(|b| b.get(..2)).map(|b| u64::from(u16::from_le_bytes([b[0], b[1]]))),
-                        props::TY_U32 | props::TY_I32 => outgoing.and_then(|b| b.get(..4)).map(|b| u64::from(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))),
+                        props::TY_U32 | props::TY_I32 => {
+                            outgoing.and_then(|b| b.get(..4)).map(|b| u64::from(u32::from_le_bytes([b[0], b[1], b[2], b[3]])))
+                        }
                         _ => None,
                     };
                     if let Some(value) = value {

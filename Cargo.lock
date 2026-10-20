@@ -3103,7 +3103,7 @@ dependencies = [
 
 [[package]]
 name = "lightcraft-cameras"
-version = "0.8.0"
+version = "0.9.1"
 dependencies = [
  "block2 0.6.2",
  "objc2 0.6.4",
@@ -3430,7 +3430,7 @@ dependencies = [
 
 [[package]]
 name = "lightcraft-ptp"
-version = "0.8.0"
+version = "0.9.1"
 
 [[package]]
 name = "lightcraft-raster"

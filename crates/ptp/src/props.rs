@@ -151,7 +151,8 @@ fn parse_one(r: &mut R<'_>) -> Result<Prop> {
     let _factory = read_value(r, datatype)?;
     let current = read_value(r, datatype)?;
     let form = r.u8()?;
-    let mut prop = Prop { code, datatype, flags, availability, writable, enabled, current, enums: Vec::new(), minimum: None, maximum: None, step: None };
+    let mut prop =
+        Prop { code, datatype, flags, availability, writable, enabled, current, enums: Vec::new(), minimum: None, maximum: None, step: None };
     match form {
         FORM_NONE => {}
         FORM_RANGE => {
