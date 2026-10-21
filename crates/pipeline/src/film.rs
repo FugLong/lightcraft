@@ -1145,10 +1145,12 @@ fn measure(img: &Rgb32f, film: &Film) -> FrameStats {
         return empty;
     }
     let linear = linearize_capture(img, film.capture);
-    let img = linear.as_ref().unwrap_or(img);
+    let linear = linear.as_ref().unwrap_or(img);
     // Margin trims the picture. The mask stays on film outside the detected frame.
-    let interior = interior_pixels(img, &analysis_frame(film));
-    let (base, rebate_black, mask_measured) = mask_base(img, &film.frame, film.stock, &interior, film.base());
+    // The mask is classified on the stored scan, the same pixels frame detection sees.
+    // What is stored is the transmission the print divides by.
+    let interior = interior_pixels(linear, &analysis_frame(film));
+    let (base, rebate_black, mask_measured) = mask_base(img, film.capture, &film.frame, film.stock, &interior, film.base());
     let rebate_level = luminance_2020(base.map(|v| v as f32)) as f64;
     // A margin that leaves no picture must not replace the print with an empty measurement.
     if interior.len() < 8 {
@@ -1232,15 +1234,23 @@ impl Placement {
     }
 }
 
-fn mask_base(img: &Rgb32f, frame: &FilmFrame, stock: FilmStock, interior: &[[f32; 3]], fallback: [f64; 3]) -> ([f64; 3], bool, bool) {
+fn mask_base(
+    img: &Rgb32f,
+    capture: FilmCapture,
+    frame: &FilmFrame,
+    stock: FilmStock,
+    interior: &[[f32; 3]],
+    fallback: [f64; 3],
+) -> ([f64; 3], bool, bool) {
     // The whole scan has no picture edge. Blank film is what touches the scan edge, same as frame
-    // detection. Orange that sits only in the picture is not a border.
+    // detection. Orange that sits only in the picture is not a border. The tests see the stored
+    // scan; the color they record is the transmission the print divides by.
     let edge = if frame.is_full() { Some(rebate_mask(img, stock)) } else { None };
     let mut outside_orange = Vec::new();
     let mut outside_clear = Vec::new();
     let mut outside_pale = Vec::new();
     let mut outside_bw = Vec::new();
-    for (i, p) in img.data.iter().enumerate() {
+    for (i, seen) in img.data.iter().enumerate() {
         let on_border = if let Some(edge) = &edge {
             edge.get(i).copied().unwrap_or(false)
         } else {
@@ -1251,15 +1261,16 @@ fn mask_base(img: &Rgb32f, frame: &FilmFrame, stock: FilmStock, interior: &[[f32
         if !on_border {
             continue;
         }
+        let measured = transmission((*seen).map(|c| c as f64), capture).map(|c| c as f32);
         match stock {
-            FilmStock::ColorNeg if is_mask_orange(*p) => {
-                outside_orange.push(*p);
-                if is_clear_film(*p) {
-                    outside_clear.push(*p);
+            FilmStock::ColorNeg if is_mask_orange(*seen) => {
+                outside_orange.push(measured);
+                if is_clear_film(*seen) {
+                    outside_clear.push(measured);
                 }
             }
-            FilmStock::ColorNeg if is_pale_rebate(*p) => outside_pale.push(*p),
-            FilmStock::BwNeg if !is_light_table(*p) && luminance_2020(*p) > 0.35 => outside_bw.push(*p),
+            FilmStock::ColorNeg if is_pale_rebate(*seen) => outside_pale.push(measured),
+            FilmStock::BwNeg if !is_light_table(*seen) && luminance_2020(*seen) > 0.35 => outside_bw.push(measured),
             _ => {}
         }
     }
@@ -2476,33 +2487,43 @@ mod tests {
 
     #[test]
     fn a_gamma_encoded_scan_measures_the_transmission_the_print_uses() {
+        // Pale Y sits in the rebate window in the file and falls out of it after gamma 2.2.
+        // Classifying the linearized pixel would keep the old base after the frame was found.
         let orange = [0.80f32, 0.38, 0.14];
-        let img = Rgb32f::from_fn(48, 36, |x, y| {
-            if x < 6 || y < 6 || x >= 42 || y >= 30 {
-                orange
-            } else {
-                let d = 0.25 + 0.6 * (x - 6) as f32 / 36.0;
-                orange.map(|c| c * 10f32.powf(-d))
-            }
-        });
+        let pale = [0.659f32, 0.621, 0.596];
+        assert!(is_pale_rebate(pale));
+        let strip = |border: [f32; 3], d0: f32, span: f32| {
+            Rgb32f::from_fn(48, 36, |x, y| {
+                if x < 6 || y < 6 || x >= 42 || y >= 30 {
+                    border
+                } else {
+                    let d = d0 + span * (x - 6) as f32 / 36.0;
+                    border.map(|c| c * 10f32.powf(-d))
+                }
+            })
+        };
+        let orange_img = strip(orange, 0.25, 0.6);
+        let pale_img = strip(pale, 0.35, 0.5);
         let y = |p: [f32; 3]| 0.2627 * p[0] + 0.6780 * p[1] + 0.0593 * p[2];
         for capture in [FilmCapture::Gamma18, FilmCapture::Gamma22] {
-            let film = Film { capture, ..Film::default() };
-            let analysis = analyze_image(&img, &film);
-            assert!(analysis.stats.mask_measured, "{}", capture.label());
-            let lin = orange.map(|c| (c as f64).powf(capture.gamma()));
-            let base = analysis.film.base();
-            for c in 0..3 {
-                assert!((base[c] - lin[c]).abs() < 0.05, "{:?} base {base:?} linearized {lin:?}", capture);
-            }
-            let mask = FilmKernel::from_film(&analysis.film).apply(orange);
-            assert!(y(mask) < 0.08, "{} rebate stays black {mask:?} base {base:?}", capture.label());
-            let picked = transmission(orange.map(|v| v as f64), capture);
-            for c in 0..3 {
-                assert!((base[c] - picked[c]).abs() < 0.05, "a border click stores {picked:?}, the print uses {base:?}");
+            let seen = pale.map(|c| c.powf(capture.gamma() as f32));
+            assert!(!is_pale_rebate(seen) && !is_mask_orange(seen), "{}", capture.label());
+            for (border, img) in [(orange, &orange_img), (pale, &pale_img)] {
+                let analysis = analyze_image(img, &Film { capture, ..Film::default() });
+                if border == pale {
+                    assert!(analysis.frame_error.is_none() && !analysis.film.frame.is_full(), "{}", capture.label());
+                }
+                assert!(analysis.stats.mask_measured, "{border:?} {}", capture.label());
+                let base = analysis.film.base();
+                let picked = transmission(border.map(|v| v as f64), capture);
+                for c in 0..3 {
+                    assert!((base[c] - picked[c]).abs() < 0.05, "{:?} base {base:?} transmission {picked:?}", capture);
+                }
+                let mask = FilmKernel::from_film(&analysis.film).apply(border);
+                assert!(y(mask) < 0.08, "{} rebate stays black {mask:?} base {base:?}", capture.label());
             }
         }
-        let linear = analyze_image(&img, &Film::default());
+        let linear = analyze_image(&orange_img, &Film::default());
         assert!((linear.film.base()[0] - orange[0] as f64).abs() < 0.05, "linear keeps the file value {:?}", linear.film.base());
     }
 

@@ -63,7 +63,9 @@ already lifted the mask, is the base when no orange is there. A clipped white la
 base. Among bright orange film, Auto uses the strongest orange, low in both blue and green. Density
 is `D = -log10(transmission / base)`, which removes the constant orange mask and nothing else.
 Scan gamma is removed first. Linear leaves the file alone. Gamma 1.8 and 2.2 raise each channel
-to that power, and the print does the same, so a measured rebate is black.
+to that power, and the print does the same, so a measured rebate is black. Frame detection and
+the mask both classify that stored scan, so a pale rebate that only looks pale before gamma is
+still the base, stored as the transmission.
 
 A colour negative's straight line is `D ≈ 0.60 · log10(exposure)`. The positive is that exposure,
 `(10^(D / γ) − 1)` divided by the same expression at the bright end of the frame, so that end is
