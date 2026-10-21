@@ -28,7 +28,7 @@ fn commit_measured(s: &mut Session, id: PhotoId, d: DevelopSettings, label: &str
 
 /// The thumbnail in the space density is measured in: camera RGB when the file has its own
 /// matrix, otherwise the working image.
-fn scanner_image(s: &mut Session, id: PhotoId, cmd: &str) -> Result<lightcraft_raster::Rgb32f> {
+pub(crate) fn scanner_image(s: &mut Session, id: PhotoId, cmd: &str) -> Result<lightcraft_raster::Rgb32f> {
     let src = s.source_now(id, SourceLevel::Thumb).map_err(|e| bad(cmd, e))?;
     let d = s.develop_of(id).unwrap_or_default();
     let mut img = oriented(&src, &d);
@@ -51,6 +51,23 @@ fn run_analyze(s: &mut Session, id: PhotoId, cmd: &str) -> Result<Value> {
 
 fn active(s: &Session, c: &str) -> Result<PhotoId> {
     s.active().ok_or_else(|| bad(c, "no active photo"))
+}
+
+/// Place the print again from the current frame and margin. The mask base and paper contrast stay.
+pub(crate) fn reprint(img: &lightcraft_raster::Rgb32f, d: &mut DevelopSettings) {
+    if film::trimmed_sample_count(img, &d.film) < 8 {
+        return;
+    }
+    let placed = film::place(img, &d.film);
+    d.film.d_lo = placed.d_lo;
+    d.film.d_hi = placed.d_hi;
+    d.film.set_fog(placed.fog);
+    d.film.set_axis(placed.axis);
+    d.film.set_white(placed.white);
+    d.film.mid_a = placed.mid_a;
+    d.film.mid_b = placed.mid_b;
+    d.film.grade = placed.grade;
+    d.film.exposure = placed.exposure;
 }
 
 fn commit(s: &mut Session, id: PhotoId, d: DevelopSettings, label: &str) -> Result<()> {
@@ -364,6 +381,81 @@ fn corners_param(p: &Value) -> Result<[[f64; 2]; 4]> {
 #[cfg(test)]
 mod tests {
     use serde_json::json;
+
+    #[test]
+    fn white_balance_reads_the_print_not_the_negative() {
+        use std::sync::Arc;
+
+        use lightcraft_develop::Film;
+        use lightcraft_raster::Rgb32f;
+
+        use crate::media::SourceLevel;
+
+        let mut s = crate::Session::with_demo();
+        let id = s.active().expect("demo photo");
+        let negative = [0.55f32, 0.22, 0.08];
+        let image = Arc::new(Rgb32f::filled(24, 24, negative));
+        for level in [SourceLevel::Thumb, SourceLevel::Preview, SourceLevel::Full] {
+            s.media.insert(id, level, image.clone());
+        }
+        let mut d = (*s.develop_of(id).expect("settings")).clone();
+        d.film = Film { enabled: true, scan: lightcraft_develop::FilmScan::Flat, ..Film::default() };
+        d.film.set_base([0.85, 0.40, 0.16]);
+        s.set_develop(id, d, "Film").expect("settings");
+
+        let spread = |p: [f32; 3]| p[0].max(p[1]).max(p[2]) - p[0].min(p[1]).min(p[2]);
+        s.execute("develop.wbPick", &json!({"x": 0.5, "y": 0.5})).expect("pick");
+        let info = s.source_info(id);
+        let picked = s.develop_of(id).expect("settings");
+        let mut positive = Rgb32f::filled(8, 8, negative);
+        lightcraft_pipeline::film::apply_before_white_balance(&mut positive, &info, &picked.film);
+        let before = positive.get(0, 0);
+        assert!(spread(before) > 0.02, "the fixture print should be off colour, got {before:?}");
+        let mut corrected = positive.clone();
+        lightcraft_pipeline::local::white_balance(&mut corrected, &info, &picked);
+        let after = corrected.get(0, 0);
+        assert!(spread(after) < spread(before) * 0.35, "selector left a cast {before:?} -> {after:?}");
+
+        s.execute("develop.wb", &json!({"mode": "auto"})).expect("auto");
+        let auto = s.develop_of(id).expect("settings");
+        let mut corrected = positive;
+        lightcraft_pipeline::local::white_balance(&mut corrected, &info, &auto);
+        let after = corrected.get(0, 0);
+        assert!(spread(after) < spread(before) * 0.35, "auto left a cast {before:?} -> {after:?}");
+    }
+
+    #[test]
+    fn margin_reprints_and_keeps_the_stored_mask() {
+        use std::sync::Arc;
+
+        use lightcraft_develop::Film;
+        use lightcraft_raster::Rgb32f;
+
+        use crate::media::SourceLevel;
+
+        let mut s = crate::Session::with_demo();
+        let id = s.active().expect("demo photo");
+        let base = [0.90f32, 0.42, 0.16];
+        let picture = [0.32f32, 0.15, 0.06];
+        let leak = [0.95f32, 0.20, 0.05];
+        let image = Arc::new(Rgb32f::from_fn(40, 40, |x, y| if x < 8 || y < 8 || x >= 32 || y >= 32 { leak } else { picture }));
+        for level in [SourceLevel::Thumb, SourceLevel::Preview, SourceLevel::Full] {
+            s.media.insert(id, level, image.clone());
+        }
+        let mut d = (*s.develop_of(id).expect("settings")).clone();
+        d.film = Film { enabled: true, scan: lightcraft_develop::FilmScan::Flat, grade: 1.4, ..Film::default() };
+        d.film.set_base([base[0] as f64, base[1] as f64, base[2] as f64]);
+        let mask = d.film.base();
+        s.set_develop(id, d, "Film").expect("settings");
+        let before = s.develop_of(id).expect("settings").film.exposure;
+        s.execute("develop.set", &json!({"control": "film.inset", "value": 25.0})).expect("margin");
+        let film = s.develop_of(id).expect("settings").film.clone();
+        assert!((film.inset - 25.0).abs() < 1e-9);
+        assert!((film.exposure - before).abs() > 0.05, "margin did not reprint: {before} -> {}", film.exposure);
+        assert!((film.grade - 1.4).abs() < 1e-9, "margin replaced contrast");
+        let kept = film.base();
+        assert!((kept[0] - mask[0]).abs() < 1e-9 && (kept[2] - mask[2]).abs() < 1e-9, "margin moved the mask");
+    }
 
     #[test]
     fn analyze_turns_conversion_on_and_a_bad_frame_is_refused() {

@@ -564,6 +564,7 @@ fn film_section(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId, d: &Dev
             }
         });
         if d.film.enabled {
+            control(app, ui, d, "film.inset", true);
             for c in ["film.exposure", "film.grade", "film.black"] {
                 control(app, ui, d, c, true);
             }
@@ -657,6 +658,12 @@ fn film_crop(app: &mut LightcraftApp, ui: &mut egui::Ui) {
             let _ = app.run("panel.crop", json!({}));
         }
     });
+    ui.add_space(6.0);
+    ui.label(
+        RichText::new(crate::i18n::tr("Margin trims each edge of the frame before the picture is measured. The border stays the blank film."))
+            .font(t.font(12.0))
+            .color(t.text_dim),
+    );
 }
 
 fn film_tools(app: &mut LightcraftApp, ui: &mut egui::Ui, d: &DevelopSettings) {

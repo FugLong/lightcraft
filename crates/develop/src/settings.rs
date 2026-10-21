@@ -1393,6 +1393,11 @@ pub struct Film {
     /// temperature is a trim on top of this and not the thing that removes the mask.
     pub print: FilmPrint,
     pub frame: FilmFrame,
+    /// Percent trimmed from each edge of [`Self::frame`] before the picture is measured.
+    /// Zero measures the whole frame. The mask still comes from film outside that frame.
+    /// Omitted from a catalog while it is zero.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub inset: f64,
     pub base_r: f64,
     pub base_g: f64,
     pub base_b: f64,
@@ -1455,6 +1460,7 @@ impl Default for Film {
             scan: FilmScan::Camera,
             print: FilmPrint::Neutral,
             frame: FilmFrame::default(),
+            inset: 0.0,
             base_r: 1.0,
             base_g: 1.0,
             base_b: 1.0,

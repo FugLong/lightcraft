@@ -1,6 +1,6 @@
 # Lightroom parity checklist
 
-> **Last reviewed:** 2026-10-17 · **Last updated:** 2026-10-17 · **Change:** patch (Negative Craft cleanup: Skin, Foliage, and Sky removed) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
+> **Last reviewed:** 2026-10-20 · **Last updated:** 2026-10-20 · **Change:** patch (Negative Craft margin, and white balance on the print) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
 
 The measured, row-by-row checklist: one row per Lightroom feature, menu item and shortcut, what we
 have and what is missing. It answers *does the feature exist?* (feature breadth). Whether it is good
@@ -799,7 +799,7 @@ Latin stays upright. Advanced Japanese composition remains open. Regression cove
 | Id | Feature | Tier | Status | Evidence | Notes |
 |---|---|---|---|---|---|
 | LR-FILM-CONVERT | Negative Craft convert | P2 | ✅ | `cmd:film.analyze`, `cmd:film.setEnabled`, `cmd:section.film`, `crates/pipeline/src/film.rs`, `docs/negative-craft.md` | scene-linear transmission before white balance, in camera RGB when the file has a colour matrix; mask prints black; density inverts through the film gamma with highlight headroom. The Edit section stays hidden until Window ▸ Edit Sections ▸ Negative Craft; a converted photo still shows it |
-| LR-FILM-FRAME | Analysis frame | P2 | ✅ | `cmd:film.setFrame`, `cmd:film.analyze`, `cmd:film.cropToImage` | quad fit to the rebate; a miss keeps the previous quad and reports `frameError`; Crop ▸ Auto crops to the picture, including inside sprocket holes, and does not reprint |
+| LR-FILM-FRAME | Analysis frame | P2 | ✅ | `cmd:film.setFrame`, `cmd:film.analyze`, `cmd:film.cropToImage`, `ctl:film.inset` | quad fit to the rebate; a miss keeps the previous quad and reports `frameError`; Crop ▸ Auto crops to the picture, including inside sprocket holes, and does not reprint. Margin trims each edge of that frame before the picture is measured and leaves the mask on the blank film |
 | LR-FILM-PICK | Base and neutral picks | P2 | ✅ | `cmd:film.pickBase`, `cmd:film.pickShadow`, `cmd:film.pickHighlight`, `cmd:film.pickGray` | a pale or white-balanced rebate is a valid base; a clipped lamp is refused; a gray click sets the axis and does not refit it; two neutrals set per-channel contrast |
 | LR-FILM-ROLL | Roll analysis | P2 | ✅ | `cmd:film.analyzeRoll` | shared mask color and gray axis; each frame's exposure is placed again with that axis; drift warning past half a stop |
 | LR-FILM-CONTROLS | Paper and cast | P2 | ✅ | `ctl:film.exposure`, `ctl:film.grade`, `ctl:film.black`, `ctl:film.shoulder`, `ctl:film.presat`, `ctl:film.temp`, `ctl:film.tint`, `ctl:film.shadowTemp`, `ctl:film.midTemp`, `ctl:film.highTemp` | shadow, mid, and highlight balance reach about 0.40 density |
@@ -810,6 +810,7 @@ Latin stays upright. Advanced Japanese composition remains open. Regression cove
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-20 | patch | LR-FILM-FRAME: Margin (`film.inset`) trims the analysis frame; white balance reads the print (status unchanged, ✅) |
 | 2026-10-17 | patch | LR-FILM-CONTROLS: cleanup, Skin / Foliage / Sky removed (status unchanged, ✅) |
 | 2026-10-17 | patch | LR-FILM-CONVERT: the Edit section stays hidden until Window ▸ Edit Sections ▸ Negative Craft (status unchanged, ✅) |
 | 2026-10-17 | patch | LR-FILM-PICK, LR-FILM-FRAME: a pale or white-balanced rebate is a valid film base; only a clipped lamp is refused (status unchanged, ✅) |

@@ -2,7 +2,7 @@
 
 `crates/pipeline/src/film.rs` converts a color negative or a black-and-white negative.
 It runs on scene-linear transmission, before white balance, and hands a scene-linear positive to
-the rest of the pipeline. On a raw file with its own colour matrix the density is measured in
+the rest of the pipeline. Auto white balance and the selector sample that positive, not the negative. On a raw file with its own colour matrix the density is measured in
 white-balanced camera RGB; the matrix only carries the positive back to Rec.2020. A JPEG is already
 in the working space, so the same curve is only as true as that file. The GPU kernel `film_k`
 (`crates/gpu/src/wgsl/map.wgsl`) is the same formula, including the 43 words from `FilmKernel::words`.
@@ -26,7 +26,9 @@ already a positive.
   Lab) are the dye correction and the paper, on a color negative. **Look** (Neutral, Warm, Cool,
   Paper, Cinematic) changes color and the paper shoulder. It does not replace the border, the
   gray axis, exposure, contrast, or whether conversion is on. **Exposure**, **Contrast**, and
-  **Blacks** place the print. On a color negative, **Temp**, **Tint**, and the shadow, midtone,
+  **Blacks** place the print. **Margin** is a percent trimmed from each edge of the frame before
+  that measurement. The blank film outside the frame stays the mask. Cropping does not change it.
+  On a color negative, **Temp**, **Tint**, and the shadow, midtone,
   and highlight balances trim color. A black-and-white negative stops at the print sliders: the
   color looks stay off, so they cannot tint the gray. **More** on a color negative keeps the cast
   Auto removed, saturation, shoulder, the mask numbers, Film / Scene intent, scan gamma (Linear,
@@ -46,6 +48,7 @@ already a positive.
   - `film.pickShadow {x, y}` and `film.pickHighlight {x, y}` — per-channel contrast, then a new placement
   - `film.setFrame {corners: [[x, y], [x, y], [x, y], [x, y]]}`
   - `film.cropToImage {}` — **Auto** under Crop; cuts to the picture and does not reprint
+  - `develop.set {control: film.inset, value: 0..40}` — **Margin**. Trims that percent from each edge of the frame and places the print again. The mask base and contrast stay. Zero measures the whole frame.
   - `film.analyzeRoll {}` — share mask color and the gray axis; each frame is exposed again so the shared gray does not move its midtone
   - `film.inspect {}` — density histogram and rebate, without writing settings
   - `preset.apply {id: lc.nc-neutral|lc.nc-warm|lc.nc-cool|lc.nc-paper|lc.nc-cine}` — the five looks,

@@ -321,7 +321,8 @@ fn op_variants_are_versioned() {
     }
     /// v9: `Photo.preview_checked` and `Op::SetContent.preview_checked`.
     /// v10: `DevelopSettings.film`.
-    const NEWEST_FIELDS: u32 = 10;
+    /// v11: `Film.inset`.
+    const NEWEST_FIELDS: u32 = 11;
     let newest = since(&Op::SetHistoryCursor { id: PhotoId(1), cursor: None });
     assert_eq!(newest.max(NEWEST_FIELDS), VERSION, "the newest op's or fields' version must be the current format version");
 }

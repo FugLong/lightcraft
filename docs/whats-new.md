@@ -10,9 +10,14 @@
   clipped. A gray axis takes out a cast that runs through the whole frame, and **Gray** sets that axis
   from one tone that should print gray. A raw scan is balanced in the camera's own colour, before the
   working-space conversion. How to scan and convert is in `docs/user/guides/convert-a-negative.md`.
-- The catalog format is now version 10 (`DevelopSettings.film`). A converted photo writes those settings
-  into the library. Once this version has opened a library, older builds refuse it instead of loading the
-  photo and dropping the conversion. A photo that was never converted still omits the field.
+- **Margin** trims each edge of the detected frame before the picture is measured. The blank film
+  outside the frame stays the border. Cropping the photo does not change that measurement.
+- White balance, Auto and the selector, reads the converted print. A pick on the negative no longer
+  solves temperature and tint for the orange mask.
+- The catalog format is now version 11 (`DevelopSettings.film`, and `Film.inset` when Margin is not
+  zero). A converted photo writes those settings into the library. Once this version has opened a
+  library, older builds refuse it instead of loading the photo and dropping the conversion. A photo
+  that was never converted still omits the field.
 
 ## 2026-10-14
 

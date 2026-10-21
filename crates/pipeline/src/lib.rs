@@ -475,15 +475,9 @@ pub fn lin_cpu(img: &mut Rgb32f, info: &SourceInfo, p: &Plan<'_>) {
     local_tone::apply(img, info, p);
     // Negative Craft runs on transmission, before white balance, so the as-shot white does not
     // neutralize the mask. A raw with its own matrix is converted in camera RGB and returned to
-    // Rec.2020; white balance after that is the positive's.
-    let scanner = film::scanner_space(info).filter(|_| s.film.enabled);
-    if let Some(space) = &scanner {
-        film::apply_matrix(img, &space.to_camera);
-    }
-    film::apply(img, &s.film);
-    if let Some(space) = &scanner {
-        film::apply_matrix(img, &space.to_working);
-    }
+    // Rec.2020; white balance after that is the positive's. Auto and the white-balance selector
+    // use this same step, or they would balance the negative.
+    film::apply_before_white_balance(img, info, &s.film);
     local::white_balance(img, info, s);
     optics::defringe(img, s, p.px_per_long / optics::DEFRINGE_REF_LONG);
     spots::apply(img, &s.spots, &p.frame, p.px_per_long);

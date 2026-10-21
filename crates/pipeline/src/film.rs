@@ -361,6 +361,22 @@ pub fn apply(img: &mut Rgb32f, film: &Film) {
     });
 }
 
+/// The pixels white balance reads: Negative Craft, then back in the working space.
+///
+/// Same order as the scene-linear stage. Density is measured in camera RGB when the file has
+/// its own matrix, and the positive is returned to Rec.2020 before white balance. A disabled
+/// stage leaves `img` unchanged.
+pub fn apply_before_white_balance(img: &mut Rgb32f, info: &SourceInfo, film: &Film) {
+    let scanner = scanner_space(info).filter(|_| film.enabled);
+    if let Some(space) = &scanner {
+        apply_matrix(img, &space.to_camera);
+    }
+    apply(img, film);
+    if let Some(space) = &scanner {
+        apply_matrix(img, &space.to_working);
+    }
+}
+
 /// The scan encoding, as [`FilmKernel::apply`] removes it. Linear is unchanged. Gamma 1.8 and 2.2
 /// raise each stored channel to that power, so a measurement and the print see one transmission.
 pub fn transmission(sample: [f64; 3], capture: FilmCapture) -> [f64; 3] {
@@ -1008,6 +1024,52 @@ fn quad_area(c: &[[f64; 2]; 4]) -> f64 {
     a.abs() * 0.5
 }
 
+/// The frame [`Film::inset`] leaves for the picture. The mask is not trimmed.
+fn analysis_frame(film: &Film) -> FilmFrame {
+    let margin = if film.inset.is_finite() { (film.inset / 100.0).clamp(0.0, 0.4) } else { 0.0 };
+    inset_frame(&film.frame, margin)
+}
+
+/// Pull each corner toward the frame's center so a fraction `margin` of the frame is dropped
+/// on every side. Zero leaves the quad alone. A rectangle loses `margin` of its width and height.
+fn inset_frame(frame: &FilmFrame, margin: f64) -> FilmFrame {
+    if !margin.is_finite() || margin <= 1e-6 {
+        return *frame;
+    }
+    let scale = 1.0 - 2.0 * margin.clamp(0.0, 0.45);
+    let (mut cx, mut cy) = (0.0, 0.0);
+    for p in &frame.corners {
+        cx += p[0];
+        cy += p[1];
+    }
+    cx /= 4.0;
+    cy /= 4.0;
+    let mut out = *frame;
+    for (i, p) in frame.corners.iter().enumerate() {
+        if let Some(slot) = out.corners.get_mut(i) {
+            *slot = [cx + (p[0] - cx) * scale, cy + (p[1] - cy) * scale];
+        }
+    }
+    out
+}
+
+fn interior_pixels(img: &Rgb32f, frame: &FilmFrame) -> Vec<[f32; 3]> {
+    let mut interior = Vec::new();
+    if img.width == 0 || img.height == 0 {
+        return interior;
+    }
+    let w = img.width as f64;
+    let h = img.height.max(1) as f64;
+    for (i, p) in img.data.iter().enumerate() {
+        let x = (i % img.width) as f64 / w;
+        let y = (i / img.width) as f64 / h;
+        if inside_frame(frame, x + 0.5 / w, y + 0.5 / h) {
+            interior.push(*p);
+        }
+    }
+    interior
+}
+
 /// True when `x`, `y` (normalized) lie inside the frame.
 pub fn inside_frame(frame: &FilmFrame, x: f64, y: f64) -> bool {
     let c = &frame.corners;
@@ -1055,16 +1117,14 @@ fn measure(img: &Rgb32f, film: &Film) -> FrameStats {
     }
     let linear = linearize_capture(img, film.capture);
     let img = linear.as_ref().unwrap_or(img);
-    let mut interior = Vec::new();
-    for (i, p) in img.data.iter().enumerate() {
-        let x = (i % img.width) as f64 / img.width as f64;
-        let y = (i / img.width) as f64 / img.height.max(1) as f64;
-        if inside_frame(&film.frame, x + 0.5 / img.width as f64, y + 0.5 / img.height.max(1) as f64) {
-            interior.push(*p);
-        }
-    }
+    // Margin trims the picture. The mask stays on film outside the detected frame.
+    let interior = interior_pixels(img, &analysis_frame(film));
     let (base, rebate_black, mask_measured) = mask_base(img, &film.frame, film.stock, &interior, film.base());
     let rebate_level = luminance_2020(base.map(|v| v as f32)) as f64;
+    // A margin that leaves no picture must not replace the print with an empty measurement.
+    if interior.len() < 8 {
+        return FrameStats { base, rebate_level, rebate_black, mask_measured, ..empty };
+    }
     let (gamma, dominant) = match film.intent {
         FilmIntent::Stock => (film.gamma(), dominant_fraction(&interior, &base)),
         FilmIntent::Scene => scene_gamma(&interior, &base, film.gamma()),
@@ -1095,6 +1155,13 @@ fn measure(img: &Rgb32f, film: &Film) -> FrameStats {
     }
 }
 
+/// How many pixels Margin leaves for the picture. Under 8, placement is left as it was.
+pub fn trimmed_sample_count(img: &Rgb32f, film: &Film) -> usize {
+    let linear = linearize_capture(img, film.capture);
+    let img = linear.as_ref().unwrap_or(img);
+    interior_pixels(img, &analysis_frame(film)).len()
+}
+
 /// Print placement for the base already stored on `film` (a border pick keeps that base).
 pub fn place(img: &Rgb32f, film: &Film) -> Placement {
     place_inner(img, film, None)
@@ -1108,16 +1175,7 @@ pub fn place_keeping_axis(img: &Rgb32f, film: &Film) -> Placement {
 fn place_inner(img: &Rgb32f, film: &Film, locked: Option<([f64; 3], [f64; 3])>) -> Placement {
     let linear = linearize_capture(img, film.capture);
     let img = linear.as_ref().unwrap_or(img);
-    let mut interior = Vec::new();
-    if img.width > 0 && img.height > 0 {
-        for (i, p) in img.data.iter().enumerate() {
-            let x = (i % img.width) as f64 / img.width as f64;
-            let y = (i / img.width) as f64 / img.height.max(1) as f64;
-            if inside_frame(&film.frame, x + 0.5 / img.width as f64, y + 0.5 / img.height.max(1) as f64) {
-                interior.push(*p);
-            }
-        }
-    }
+    let interior = interior_pixels(img, &analysis_frame(film));
     if film.stock.negative() {
         place_negative(&interior, &film.base(), &film.gamma(), film.grade, film.stock == FilmStock::ColorNeg, film.scan, locked)
     } else {
@@ -1817,6 +1875,33 @@ pub const DRIFT_WARN: f64 = 0.5;
 mod tests {
     use super::*;
     use lightcraft_develop::{FilmCapture, FilmScan};
+
+    #[test]
+    fn margin_drops_the_frame_edge_and_keeps_the_mask_and_grade() {
+        let base = [0.90f64, 0.42, 0.16];
+        let mut film = Film { enabled: true, scan: FilmScan::Flat, grade: 1.4, ..Film::default() };
+        film.set_base(base);
+        let leak = [0.95f32, 0.20, 0.05];
+        let picture = base.map(|v| (v * 0.35) as f32);
+        let img = Rgb32f::from_fn(40, 40, |x, y| if x < 8 || y < 8 || x >= 32 || y >= 32 { leak } else { picture });
+        let open = place(&img, &film);
+        film.inset = 25.0;
+        let tight = place(&img, &film);
+        assert!((open.grade - 1.4).abs() < 1e-9 && (tight.grade - open.grade).abs() < 1e-9, "margin replaced contrast");
+        let moved = (open.exposure - tight.exposure).abs() > 0.05 || (open.d_hi - tight.d_hi).abs() > 0.02 || open.fog != tight.fog || open.axis != tight.axis;
+        assert!(moved, "margin left the print unchanged: {open:?} vs {tight:?}");
+        let mut full = film.clone();
+        full.inset = 0.0;
+        let mask_open = super::measure(&img, &full).base;
+        let mask_tight = super::measure(&img, &film).base;
+        assert!((mask_open[0] - mask_tight[0]).abs() < 1e-5 && (mask_open[2] - mask_tight[2]).abs() < 1e-5, "margin moved the mask {mask_open:?} {mask_tight:?}");
+        let tiny = Rgb32f::filled(10, 10, picture);
+        let mut kept = film.clone();
+        kept.inset = 40.0;
+        kept.exposure = 1.25;
+        let stats = super::measure(&tiny, &kept);
+        assert!((stats.exposure - 1.25).abs() < 1e-9, "a margin with no picture left reset the print");
+    }
 
     #[test]
     fn the_mask_is_black_and_a_neutral_stays_neutral() {

@@ -182,6 +182,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 }
                 let label = if vals.len() == 1 { controls::find(&vals[0].0).map(|c| c.label).unwrap_or("Edit").to_string() } else { "Edit".into() };
                 let angle = vals.iter().any(|(k, _)| k == CROP_ANGLE);
+                let touches_inset = vals.iter().any(|(k, _)| k == "film.inset");
                 let apply = |d: &mut DevelopSettings, info: &lightcraft_pipeline::SourceInfo, dims: (f64, f64)| {
                     let before = d.crop.geometry;
                     if vals.iter().any(|(k, _)| k == "wb.temp" || k == "wb.tint") {
@@ -201,24 +202,38 @@ pub fn specs() -> Vec<CommandSpec> {
                 };
                 if let Some(ids) = p.get("ids").and_then(Value::as_array) {
                     let ids: Vec<PhotoId> = ids.iter().filter_map(Value::as_u64).map(PhotoId).collect();
-                    let ops = ids
-                        .iter()
-                        .filter_map(|id| s.develop_of(*id).map(|d| (*id, d)))
-                        .filter_map(|(id, d)| {
-                            let mut d = (*d).clone();
-                            let info = s.source_info(id);
-                            apply(&mut d, &info, crop_dims(s, id));
-                            s.develop_op(id, d, &label)
-                        })
-                        .collect();
+                    let mut prepared = Vec::new();
+                    for id in ids {
+                        let (enabled, info, dims) = {
+                            let Some(current) = s.develop_of(id) else { continue };
+                            (current.film.enabled, s.source_info(id), crop_dims(s, id))
+                        };
+                        let img = if touches_inset && enabled { Some(super::film::scanner_image(s, id, "develop.set")?) } else { None };
+                        let Some(current) = s.develop_of(id) else { continue };
+                        let mut d = (*current).clone();
+                        apply(&mut d, &info, dims);
+                        if let Some(img) = &img {
+                            super::film::reprint(img, &mut d);
+                        }
+                        prepared.push((id, d));
+                    }
+                    let ops = prepared.into_iter().filter_map(|(id, d)| s.develop_op(id, d, &label)).collect();
                     s.commit(&label, Op::Batch { ops })?;
                     return ok();
                 }
                 let id = active(s, "develop.set")?;
                 let info = s.source_info(id);
                 let dims = crop_dims(s, id);
+                let img = if touches_inset && s.develop_of(id).is_some_and(|d| d.film.enabled) {
+                    Some(super::film::scanner_image(s, id, "develop.set")?)
+                } else {
+                    None
+                };
                 edit(s, "develop.set", &label, |d| {
                     apply(d, &info, dims);
+                    if let Some(img) = &img {
+                        super::film::reprint(img, d);
+                    }
                     Ok(())
                 })
             }
@@ -229,6 +244,11 @@ pub fn specs() -> Vec<CommandSpec> {
             let delta = f64_req(p, "delta", "develop.adjust")?;
             let id = active(s, "develop.adjust")?;
             let (info, dims) = (s.source_info(id), crop_dims(s, id));
+            let img = if c == "film.inset" && s.develop_of(id).is_some_and(|d| d.film.enabled) {
+                Some(super::film::scanner_image(s, id, "develop.adjust")?)
+            } else {
+                None
+            };
             edit(s, "develop.adjust", spec.label, |d| {
                 let before = d.crop.geometry;
                 if c == "wb.temp" || c == "wb.tint" {
@@ -242,6 +262,9 @@ pub fn specs() -> Vec<CommandSpec> {
                 let v = controls::get(d, &c).unwrap_or(spec.default);
                 controls::set(d, &c, v + delta);
                 refit_crop_angle(c == CROP_ANGLE, before, d, dims);
+                if let Some(img) = &img {
+                    super::film::reprint(img, d);
+                }
                 Ok(())
             })
         }),
@@ -410,7 +433,10 @@ pub fn specs() -> Vec<CommandSpec> {
                 let (mut t, mut tint) = match mode {
                     WbMode::AsShot => (info.as_shot_temp, info.as_shot_tint),
                     WbMode::Auto => {
-                        let src = s.source_now(id, SourceLevel::Thumb).map_err(|e| bad("develop.wb", e))?;
+                        let mut src = (*s.source_now(id, SourceLevel::Thumb).map_err(|e| bad("develop.wb", e))?).clone();
+                        let film = s.develop_of(id).unwrap_or_default().film.clone();
+                        // Balance the print. The thumbnail is still the negative until this step.
+                        lightcraft_pipeline::film::apply_before_white_balance(&mut src, &info, &film);
                         lightcraft_pipeline::auto::auto_wb(&src, &info)
                     }
                     m => m
@@ -441,20 +467,26 @@ pub fn specs() -> Vec<CommandSpec> {
             let src = s.source_now(id, SourceLevel::Thumb).map_err(|e| bad("develop.wbPick", e))?;
             let info = s.source_info(id);
             let d = s.develop_of(id).unwrap_or_default();
-            // Sample a small neighbourhood in the oriented source.
+            // Sample a small neighbourhood in the oriented source, then convert it. The film
+            // curve is not linear, so each sample is converted before the average.
             let o = src.oriented(d.orientation);
             let (cx, cy) = ((x.clamp(0.0, 1.0) * o.width as f64) as isize, (y.clamp(0.0, 1.0) * o.height as f64) as isize);
-            let mut acc = [0.0f32; 3];
+            let mut samples = Vec::with_capacity(25);
             for dy in -2..=2 {
                 for dx in -2..=2 {
-                    let c = o.get_clamped(cx + dx, cy + dy);
-                    for i in 0..3 {
-                        acc[i] += c[i] / 25.0;
-                    }
+                    samples.push(o.get_clamped(cx + dx, cy + dy));
                 }
             }
-            let patch = lightcraft_raster::Rgb32f::filled(4, 4, acc);
-            let (t, tint) = lightcraft_pipeline::auto::auto_wb(&patch, &info);
+            let mut patch = lightcraft_raster::Rgb32f { width: 5, height: 5, data: samples };
+            lightcraft_pipeline::film::apply_before_white_balance(&mut patch, &info, &d.film);
+            let mut acc = [0.0f32; 3];
+            for c in &patch.data {
+                for i in 0..3 {
+                    acc[i] += c[i] / 25.0;
+                }
+            }
+            let flat = lightcraft_raster::Rgb32f::filled(4, 4, acc);
+            let (t, tint) = lightcraft_pipeline::auto::auto_wb(&flat, &info);
             edit(s, "develop.wbPick", "White Balance", |d| {
                 lightcraft_pipeline::local::normalize_wb(d, &info);
                 d.wb.mode = WbMode::Custom;
