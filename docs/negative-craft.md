@@ -60,7 +60,8 @@ already a positive.
 Clear film is the per-channel base, from the rebate (or **Border**). A strong orange mask is
 preferred. A pale or near-white rebate, such as old film or a raw whose camera white balance has
 already lifted the mask, is the base when no orange is there. A clipped white lamp is never the
-base. Among bright orange film, Auto uses the strongest orange, low in both blue and green. Density
+base. A click darker than the scan's own bright film is refused as too dark, not as blown out.
+Among bright orange film, Auto uses the strongest orange, low in both blue and green. Density
 is `D = -log10(transmission / base)`, which removes the constant orange mask and nothing else.
 Scan gamma is removed first. Linear leaves the file alone. Gamma 1.8 and 2.2 raise each channel
 to that power, and the print does the same, so a measured rebate is black. Frame detection and

@@ -936,19 +936,66 @@ fn is_pale_rebate(p: [f32; 3]) -> bool {
     chroma <= 0.42 && b > r * 0.45 && g + 0.08 >= b && r + 0.08 >= g
 }
 
-/// A border click may become the base. The base is whatever the blank film measures as, including
-/// a pale or near-white rebate. Only a clipped lamp is refused: it has no color left, so an orange
-/// mask inverts to blue.
-pub fn accepts_border(stock: FilmStock, sample: [f64; 3]) -> bool {
+const BORDER_BLOWN: &str = "that spot is blown out — click the blank film, not the white lamp";
+const BORDER_DARK: &str = "that spot is too dark — click the blank film, not the picture";
+
+/// Why a border click cannot be the base. A clipped lamp has no mask color left. Anything
+/// darker than the scan's own bright film is a different refusal: on a dark scan the floor
+/// follows `bright` (see [`bright_level`]), and on a bright scan it stays at the old fixed level.
+pub fn border_error(stock: FilmStock, sample: [f64; 3], bright: f64) -> Option<&'static str> {
     let p = sample.map(|v| v as f32);
     if !p.iter().all(|c| c.is_finite()) {
-        return false;
+        return Some(BORDER_BLOWN);
     }
-    match stock {
-        FilmStock::ColorNeg => !is_clipped_lamp(p) && luminance_2020(p) >= 0.15,
-        FilmStock::BwNeg => !is_clipped_lamp(p) && luminance_2020(p) > 0.25,
-        FilmStock::ColorPos | FilmStock::BwPos => true,
+    let (fixed, min_abs) = match stock {
+        FilmStock::ColorNeg => (0.15f64, 0.04f64),
+        FilmStock::BwNeg => (0.25, 0.06),
+        FilmStock::ColorPos | FilmStock::BwPos => return None,
+    };
+    if is_clipped_lamp(p) {
+        return Some(BORDER_BLOWN);
     }
+    let bright = if bright.is_finite() { bright.max(0.0) } else { fixed };
+    let floor = (bright * 0.55).max(min_abs).min(fixed);
+    if (luminance_2020(p) as f64) < floor { Some(BORDER_DARK) } else { None }
+}
+
+/// A border click on a bright scan. The base is whatever the blank film measures as, including
+/// a pale or near-white rebate.
+pub fn accepts_border(stock: FilmStock, sample: [f64; 3]) -> bool {
+    border_error(stock, sample, 1.0).is_none()
+}
+
+/// Luminance of this scan's own bright film, ignoring a clipped lamp. The 98th percentile,
+/// so a few hot pixels do not set the floor.
+pub fn bright_level(img: &Rgb32f, capture: FilmCapture) -> f64 {
+    let mut hist = [0u32; 64];
+    let mut n = 0u32;
+    let g = capture.gamma() as f32;
+    for p in &img.data {
+        let seen = p.map(|c| capture_channel(c, g));
+        if is_clipped_lamp(seen) {
+            continue;
+        }
+        let y = luminance_2020(seen).clamp(0.0, 1.0);
+        let bin = ((y * 63.0) as usize).min(63);
+        if let Some(slot) = hist.get_mut(bin) {
+            *slot += 1;
+            n = n.saturating_add(1);
+        }
+    }
+    if n == 0 {
+        return 0.15;
+    }
+    let target = ((n as f64) * 0.98).round().max(1.0) as u32;
+    let mut acc = 0u32;
+    for (i, c) in hist.iter().enumerate() {
+        acc = acc.saturating_add(*c);
+        if acc >= target {
+            return i as f64 / 63.0;
+        }
+    }
+    1.0
 }
 
 fn is_outside(p: [f32; 3], stock: FilmStock, rim: bool) -> bool {
@@ -2321,6 +2368,16 @@ mod tests {
         assert!(b[2] < 0.22 && b[0] > 0.6, "the washed lamp edge is not the base {b:?}");
         assert!(!accepts_border(FilmStock::ColorNeg, [0.97, 0.96, 0.95]));
         assert!(accepts_border(FilmStock::ColorNeg, [0.80, 0.38, 0.14]));
+        let dark = [0.10f64, 0.07, 0.05];
+        let on_bright = border_error(FilmStock::ColorNeg, dark, 1.0).unwrap_or("");
+        assert!(on_bright.contains("too dark"), "{on_bright}");
+        assert!(border_error(FilmStock::ColorNeg, dark, 0.12).is_none(), "a dark scan's own film is the base");
+        let lamp = border_error(FilmStock::ColorNeg, [0.97, 0.96, 0.95], 0.12).unwrap_or("");
+        assert!(lamp.contains("blown out"), "{lamp}");
+        let scan = Rgb32f::filled(32, 24, [0.10, 0.07, 0.05]);
+        let level = bright_level(&scan, FilmCapture::Linear);
+        assert!(border_error(FilmStock::ColorNeg, dark, level).is_none(), "level {level}");
+        assert!(border_error(FilmStock::ColorNeg, [0.02, 0.015, 0.01], level).unwrap_or("").contains("too dark"));
         // Camera white balance can lift an orange mask to a pale or near-white rebate.
         assert!(accepts_border(FilmStock::ColorNeg, [0.82, 0.76, 0.70]));
         assert!(accepts_border(FilmStock::ColorNeg, [0.85, 0.70, 0.55]));

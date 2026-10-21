@@ -290,8 +290,8 @@ fn pick(s: &mut Session, p: &Value, cmd: &str, which: Pick) -> Result<Value> {
     let mut d = (*d0).clone();
     match which {
         Pick::Base => {
-            if !film::accepts_border(d.film.stock, sample) {
-                return Err(bad(cmd, "that spot is blown out — click the blank film, not the white lamp"));
+            if let Some(msg) = film::border_error(d.film.stock, sample, film::bright_level(&img, d0.film.capture)) {
+                return Err(bad(cmd, msg));
             }
             d.film.set_base(sample);
             d.film.enabled = true;
