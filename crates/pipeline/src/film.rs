@@ -7,9 +7,11 @@
 //! the working image and is only as true as the file.
 //!
 //! A color negative's straight line is `D ≈ γ log10(exposure)` with γ near [`FILM_GAMMA`]. The
-//! positive is that exposure, `10^(D/γ) − 1`, normalised so the bright end of the frame is 1 and
-//! anything denser stays above 1 for the scene tone curve. Contrast changes γ. It is not a power
-//! on the normalised density.
+//! positive is that exposure, `10^(D/γ) − 1`, normalised so a chosen density is scene light 1.
+//! Convert places the middle of the picture on the pipeline's middle grey (0.18) and sets contrast
+//! so the bright end of that picture is 1. Those are the two degrees of freedom: exposure is a
+//! scale, contrast is the slope. A negative too steep for the softest grade keeps that grade, and
+//! a shoulder rolls the bright end back to 1. Contrast is not a power on the normalised density.
 //!
 //! The orange mask cancels dye side-absorption for colour paper, not for a camera. What a wide
 //! filter still sees is removed with Hanson's integral-to-analytical inverse ([`printing_density`];
@@ -178,14 +180,28 @@ impl FilmKernel {
             if !self.mono {
                 d = printing_density(d, self.dye);
             }
-            // One reference white after the axis, so a neutral stays neutral. Density past it
-            // stays above 1; it is not clipped before exposure or the shoulder.
-            let white = self.white.into_iter().fold(0.0f32, f32::max).max(0.05);
+            // One curve white (the brightest channel). A near-neutral bright end is gained per
+            // channel so it prints at 1, and that gain fades in toward the white. Equal whites,
+            // a saturated bright end, and black-and-white leave the gain at 1. Density past the
+            // white stays above 1.
+            let shared = self.white.into_iter().fold(0.0f32, f32::max).max(0.05);
             let film_gamma = self.power.max(0.05);
+            let mut straight = [0.0f32; 3];
             for i in 0..3 {
                 let axis = self.axis[i].max(0.05);
-                let straightened = ((d[i] - self.fog[i]).max(0.0)) / axis;
-                scene[i] = light_from_density(straightened, white, film_gamma);
+                straight[i] = ((d[i] - self.fog[i]).max(0.0)) / axis;
+            }
+            let straight_y = 0.2627 * straight[0] + 0.6780 * straight[1] + 0.0593 * straight[2];
+            let t = if self.mono { 0.0 } else { smooth(shared * 0.62, shared * 0.92, straight_y) };
+            for i in 0..3 {
+                let mut v = light_from_density(straight[i], shared, film_gamma);
+                if t > 0.0 {
+                    let channel = self.white[i].clamp(shared - 0.45, shared).max(0.05);
+                    let at = light_from_density(channel, shared, film_gamma).max(1e-4);
+                    v *= 1.0 + (1.0 / at - 1.0) * t;
+                    v = v.clamp(0.0, HEADROOM);
+                }
+                scene[i] = v;
             }
             for i in 0..3 {
                 scene[i] *= self.aim[i].max(0.0);
@@ -505,6 +521,8 @@ pub struct FrameStats {
     pub mid_a: f64,
     pub mid_b: f64,
     pub grade: f64,
+    /// Paper shoulder written by Convert. Zero when the bright end already prints at 1.
+    pub shoulder: f64,
 }
 
 #[derive(Clone, Debug)]
@@ -541,6 +559,9 @@ pub fn analyze_image(img: &Rgb32f, film: &Film) -> Analysis {
     film.mid_b = stats.mid_b;
     film.grade = stats.grade;
     film.exposure = stats.exposure;
+    if film.stock.negative() {
+        film.shoulder = stats.shoulder;
+    }
     film.enabled = true;
     Analysis { film, stats, frame_error }
 }
@@ -1189,6 +1210,7 @@ fn measure(img: &Rgb32f, film: &Film) -> FrameStats {
         mid_a: film.mid_a,
         mid_b: film.mid_b,
         grade: film.grade,
+        shoulder: film.shoulder,
     };
     if img.width == 0 || img.height == 0 {
         return empty;
@@ -1196,8 +1218,6 @@ fn measure(img: &Rgb32f, film: &Film) -> FrameStats {
     let linear = linearize_capture(img, film.capture);
     let linear = linear.as_ref().unwrap_or(img);
     // Margin trims the picture. The mask stays on film outside the detected frame.
-    // The mask is classified on the stored scan, the same pixels frame detection sees.
-    // What is stored is the transmission the print divides by.
     let interior = interior_pixels(linear, &analysis_frame(film));
     let (base, rebate_black, mask_measured) = mask_base(img, film.capture, &film.frame, film.stock, &interior, film.base());
     let rebate_level = luminance_2020(base.map(|v| v as f32)) as f64;
@@ -1210,7 +1230,7 @@ fn measure(img: &Rgb32f, film: &Film) -> FrameStats {
         FilmIntent::Scene => scene_gamma(&interior, &base, film.gamma()),
     };
     let placed = if film.stock.negative() {
-        place_negative(&interior, &base, &gamma, film.grade, film.stock == FilmStock::ColorNeg, film.scan, None)
+        place_negative(&interior, &base, &gamma, film.grade, true, film.stock == FilmStock::ColorNeg, film.scan, None)
     } else {
         Placement::slide(film.grade, exposure_for(&interior, &base, &gamma, film.stock))
     };
@@ -1232,6 +1252,7 @@ fn measure(img: &Rgb32f, film: &Film) -> FrameStats {
         mid_a: placed.mid_a,
         mid_b: placed.mid_b,
         grade: placed.grade,
+        shoulder: placed.shoulder,
     }
 }
 
@@ -1257,7 +1278,7 @@ fn place_inner(img: &Rgb32f, film: &Film, locked: Option<([f64; 3], [f64; 3])>) 
     let img = linear.as_ref().unwrap_or(img);
     let interior = interior_pixels(img, &analysis_frame(film));
     if film.stock.negative() {
-        place_negative(&interior, &film.base(), &film.gamma(), film.grade, film.stock == FilmStock::ColorNeg, film.scan, locked)
+        place_negative(&interior, &film.base(), &film.gamma(), film.grade, false, film.stock == FilmStock::ColorNeg, film.scan, locked)
     } else {
         Placement::slide(film.grade, exposure_for(&interior, &film.base(), &film.gamma(), film.stock))
     }
@@ -1273,13 +1294,14 @@ pub struct Placement {
     pub white: [f64; 3],
     pub grade: f64,
     pub exposure: f64,
+    pub shoulder: f64,
     pub mid_a: f64,
     pub mid_b: f64,
 }
 
 impl Placement {
     fn slide(grade: f64, exposure: f64) -> Self {
-        Self { d_lo: 0.0, d_hi: 1.0, fog: [0.0; 3], axis: [1.0; 3], white: [0.0; 3], grade, exposure, mid_a: 0.0, mid_b: 0.0 }
+        Self { d_lo: 0.0, d_hi: 1.0, fog: [0.0; 3], axis: [1.0; 3], white: [0.0; 3], grade, exposure, shoulder: 0.0, mid_a: 0.0, mid_b: 0.0 }
     }
 }
 
@@ -1452,20 +1474,34 @@ fn y2020(c: [f64; 3]) -> f64 {
     0.2627 * c[0] + 0.6780 * c[1] + 0.0593 * c[2]
 }
 
-/// Map the interior's density onto a print. The mask stays black. The bright end of the picture
-/// is the reference white (scene light 1, with headroom above it). Exposure then puts the middle
-/// of that light near 0.18. `grade` is the user's paper contrast and is not replaced.
+/// Map the interior's density onto a print. The mask stays black. Exposure is the scale that
+/// puts the middle of the picture on [`crate::tone::GREY`]. Contrast is the slope that puts the
+/// bright end at 1; `fit_grade` solves it, and a reprint keeps the grade it was given. On a
+/// colour negative a near-neutral bright end is gained per channel, fading in toward that end.
+/// A saturated bright end is left alone.
 fn place_negative(
     interior: &[[f32; 3]],
     base: &[f64; 3],
     gamma: &[f64; 3],
     grade: f64,
+    fit_grade: bool,
     color: bool,
     scan: FilmScan,
     locked: Option<([f64; 3], [f64; 3])>,
 ) -> Placement {
     let grade = if grade.is_finite() { grade.clamp(0.2, 6.0) } else { 1.0 };
-    let identity = Placement { d_lo: 0.0, d_hi: 1.0, fog: [0.0; 3], axis: [1.0; 3], white: [1.0; 3], grade, exposure: 0.0, mid_a: 0.0, mid_b: 0.0 };
+    let identity = Placement {
+        d_lo: 0.0,
+        d_hi: 1.0,
+        fog: [0.0; 3],
+        axis: [1.0; 3],
+        white: [1.0; 3],
+        grade,
+        exposure: 0.0,
+        shoulder: 0.0,
+        mid_a: 0.0,
+        mid_b: 0.0,
+    };
     if interior.len() < 8 {
         return identity;
     }
@@ -1476,36 +1512,135 @@ fn place_negative(
     if rough_hi < 0.15 {
         rough_hi = 0.15;
     }
-    // The clear film prints black. If it leaks into the frame it must not pull the median down.
+    // Clear film that leaked into the frame is density ~0. It must not become the gray axis.
+    // The exposure median keeps those pixels: dropping them is what printed a thin negative black.
     let floor = (rough_hi * 0.04).max(0.02);
-    let picture: Vec<[f64; 3]> = dens.iter().copied().zip(ys.iter()).filter(|(_, y)| **y > floor).map(|(d, _)| d).collect();
-    let picture = if picture.len() < 8 { dens.clone() } else { picture };
+    let axis_sample: Vec<[f64; 3]> = dens.iter().copied().zip(ys.iter()).filter(|(_, y)| **y > floor).map(|(d, _)| d).collect();
+    let axis_sample = if axis_sample.len() < 8 { dens.clone() } else { axis_sample };
     let (fog, axis) = if let Some(locked) = locked {
         locked
     } else if color {
-        gray_axis(&picture)
+        gray_axis(&axis_sample)
     } else {
         ([0.0; 3], [1.0; 3])
     };
-    let mut corrected = Vec::with_capacity(picture.len());
-    for d in &picture {
+    let mut corrected = Vec::with_capacity(dens.len());
+    for d in &dens {
         corrected.push(straighten(*d, fog, axis));
     }
     let mut hi_src: Vec<f64> = corrected.iter().copied().map(y2020).collect();
-    let d_hi = percentile_f64(&mut hi_src, 0.995).unwrap_or(1.0).max(0.15);
-    let white = [d_hi, d_hi, d_hi];
-    let film_gamma = FILM_GAMMA / grade;
-    let mut lights = Vec::with_capacity(corrected.len());
-    for d in &corrected {
-        lights.push([0, 1, 2].map(|i| density_to_light(d[i], d_hi, film_gamma)));
-    }
-    let mut ys_light: Vec<f64> = lights.iter().copied().map(y2020).collect();
-    let med = percentile_f64(&mut ys_light, 0.50).unwrap_or(0.18).max(1e-5);
-    let exposure = (0.18 / med).log2().clamp(-6.0, 6.0);
+    let d_hi = percentile_f64(&mut hi_src, 0.99).unwrap_or(1.0).max(0.15);
+    let white = if color { balanced_white(&corrected, d_hi) } else { [d_hi, d_hi, d_hi] };
+    let grade = if fit_grade { grade_for(&corrected, white) } else { grade };
+    let (med, peak) = luminance_ends(&corrected, white, grade, &mut hi_src);
+    // One scale. It puts the middle on middle grey. The bright end is wherever the grade left it.
+    let exposure = (f64::from(crate::tone::GREY) / med).log2().clamp(-6.0, 6.0);
+    let placed_peak = peak * (2.0f64).powf(exposure);
+    let shoulder = if fit_grade { paper_shoulder(placed_peak) } else { 0.0 };
     let slope = (2.0f64).powf(exposure);
-    let printed: Vec<[f64; 3]> = lights.into_iter().map(|h| h.map(|v| (v * slope).max(0.0))).collect();
+    let mut printed = Vec::with_capacity(corrected.len());
+    for d in &corrected {
+        let h = balanced_light(*d, white, FILM_GAMMA / grade);
+        printed.push(h.map(|v| (v * slope).max(0.0)));
+    }
     let (mid_a, mid_b) = midtone_ab(&printed);
-    Placement { d_lo: 0.0, d_hi, fog, axis, white, grade, exposure, mid_a, mid_b }
+    Placement { d_lo: 0.0, d_hi, fog, axis, white, grade, exposure, shoulder, mid_a, mid_b }
+}
+
+/// Contrast that makes the 98th percentile of print luminance `1/0.18` times the median.
+/// Exposure then puts the median on middle grey and the bright end on 1. A harder grade raises
+/// the ratio. The search stops at the grade limits.
+fn grade_for(corrected: &[[f64; 3]], white: [f64; 3]) -> f64 {
+    let target = 1.0 / f64::from(crate::tone::GREY);
+    // The kernel caps 10^(D/γ) at 10^8. Past that the bright end stacks on one value and a
+    // harder grade looks flatter, so the search must stay on the straight line.
+    let d_hi = white.into_iter().fold(0.0_f64, f64::max).max(0.15);
+    let grade_max = (FILM_GAMMA * 6.0 / d_hi).clamp(0.2, 6.0);
+    let mut ys = Vec::with_capacity(corrected.len());
+    let ratio_at = |grade: f64, ys: &mut Vec<f64>| {
+        let (med, peak) = luminance_ends(corrected, white, grade, ys);
+        peak / med
+    };
+    if ratio_at(0.2, &mut ys) >= target {
+        return 0.2;
+    }
+    if ratio_at(grade_max, &mut ys) <= target {
+        return grade_max;
+    }
+    let (mut lo, mut hi) = (0.2, grade_max);
+    for _ in 0..24 {
+        let mid = 0.5 * (lo + hi);
+        if ratio_at(mid, &mut ys) > target {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    0.5 * (lo + hi)
+}
+
+/// Median and 98th percentile of print luminance at `grade`, before exposure.
+fn luminance_ends(corrected: &[[f64; 3]], white: [f64; 3], grade: f64, ys: &mut Vec<f64>) -> (f64, f64) {
+    let gamma = FILM_GAMMA / grade.clamp(0.2, 6.0);
+    ys.clear();
+    for d in corrected {
+        ys.push(y2020(balanced_light(*d, white, gamma)));
+    }
+    let med = percentile_f64(ys, 0.50).unwrap_or(f64::from(crate::tone::GREY)).max(1e-5);
+    let peak = percentile_f64(ys, 0.98).unwrap_or(med).max(med);
+    (med, peak)
+}
+
+/// Shoulder that prints `peak` at 1 and leaves every value below the knee alone.
+///
+/// The kernel's roll-off is `s + (v − s) / (1 + (v − s) / s)`, which equals `2s − s²/v` and
+/// passes through `(peak, 1)` at `s = peak − √(peak(peak − 1))`. That knee stays above middle
+/// grey for any peak above 1, so the exposure scale is unchanged.
+fn paper_shoulder(peak: f64) -> f64 {
+    if !peak.is_finite() || peak <= 1.02 {
+        return 0.0;
+    }
+    let s = peak - (peak * (peak - 1.0)).sqrt();
+    if s.is_finite() { s.clamp(0.0, 1.5) } else { 0.0 }
+}
+
+/// Channel offsets of the bright end, added to `d_hi`. A neutral end stays `[d_hi, d_hi, d_hi]`.
+fn balanced_white(corrected: &[[f64; 3]], d_hi: f64) -> [f64; 3] {
+    let mut ys: Vec<f64> = corrected.iter().copied().map(y2020).collect();
+    let cut = percentile_f64(&mut ys, 0.99).unwrap_or(d_hi);
+    let mut s = [0.0; 3];
+    let mut n = 0.0;
+    for d in corrected {
+        if y2020(*d) + 1e-12 >= cut {
+            for c in 0..3 {
+                s[c] += d[c];
+            }
+            n += 1.0;
+        }
+    }
+    if n < 4.0 {
+        return [d_hi, d_hi, d_hi];
+    }
+    let mean = s.map(|v| v / n);
+    let y = y2020(mean).max(1e-4);
+    let spread = mean[0].max(mean[1]).max(mean[2]) - mean[0].min(mean[1]).min(mean[2]);
+    // A saturated bright end is the picture (a blue sky). A small cast is the white point.
+    if spread / y > 0.25 {
+        return [d_hi, d_hi, d_hi];
+    }
+    mean.map(|v| d_hi + (v - y))
+}
+
+/// Scene light of a straightened density. Same white and the same fade as [`FilmKernel::apply`].
+fn balanced_light(straight: [f64; 3], white: [f64; 3], gamma: f64) -> [f64; 3] {
+    let shared = white.into_iter().fold(0.0, f64::max).max(0.05);
+    let t = smooth(shared as f32 * 0.62, shared as f32 * 0.92, y2020(straight) as f32) as f64;
+    [0, 1, 2].map(|i| {
+        let channel = white[i].clamp(shared - 0.45, shared).max(0.05);
+        let v = density_to_light(straight[i], shared, gamma);
+        let at = density_to_light(channel, shared, gamma).max(1e-4);
+        (v * (1.0 + (1.0 / at - 1.0) * t)).clamp(0.0, f64::from(HEADROOM))
+    })
 }
 
 fn density_to_light(straight: f64, white: f64, gamma: f64) -> f64 {
@@ -1928,6 +2063,8 @@ mod tests {
         assert!((open.grade - 1.4).abs() < 1e-9 && (tight.grade - open.grade).abs() < 1e-9, "margin replaced contrast");
         let moved = (open.exposure - tight.exposure).abs() > 0.05
             || (open.d_hi - tight.d_hi).abs() > 0.02
+            || (open.mid_a - tight.mid_a).abs() > 1.0
+            || (open.mid_b - tight.mid_b).abs() > 1.0
             || open.fog != tight.fog
             || open.axis != tight.axis;
         assert!(moved, "margin left the print unchanged: {open:?} vs {tight:?}");
@@ -2421,6 +2558,34 @@ mod tests {
     }
 
     #[test]
+    fn a_low_key_print_holds_the_highlight_and_keeps_it_neutral() {
+        let orange = [0.80f32, 0.38, 0.14];
+        let hi_px = [orange[0] * 10f32.powf(-1.25), orange[1] * 10f32.powf(-1.05), orange[2] * 10f32.powf(-1.10)];
+        let img = Rgb32f::from_fn(80, 60, |x, y| {
+            if x < 6 || y < 6 || x >= 74 || y >= 54 {
+                orange
+            } else if (62..74).contains(&x) && (42..54).contains(&y) {
+                hi_px
+            } else {
+                orange.map(|c| c * 10f32.powf(-0.20))
+            }
+        });
+        let analysis = analyze_image(&img, &Film { scan: FilmScan::Flat, ..Film::default() });
+        let y = |p: [f32; 3]| 0.2627 * p[0] + 0.6780 * p[1] + 0.0593 * p[2];
+        let chroma = |p: [f32; 3]| {
+            let max = p[0].max(p[1]).max(p[2]).max(1e-6);
+            (max - p[0].min(p[1]).min(p[2])) / max
+        };
+        let hi = FilmKernel::from_film(&analysis.film).apply(hi_px);
+        assert!(y(hi) < 1.25 && y(hi) > 0.45, "highlight {hi:?} ev {}", analysis.film.exposure);
+        assert!(chroma(hi) < 0.08, "highlight tinted {hi:?} white {:?}", analysis.film.white());
+        let mut down = analysis.film.clone();
+        down.exposure -= 2.0;
+        let hi2 = FilmKernel::from_film(&down).apply(hi_px);
+        assert!(chroma(hi2) < chroma(hi) + 0.02, "lowering exposure brought the tint back {hi:?} {hi2:?}");
+    }
+
+    #[test]
     fn a_rebate_outside_the_picture_does_not_blow_the_print() {
         let orange = [0.80f32, 0.38, 0.14];
         let img = Rgb32f::from_fn(80, 60, |x, y| {
@@ -2477,6 +2642,7 @@ mod tests {
             mid_a: 0.0,
             mid_b: 0.0,
             grade: 1.0,
+            shoulder: 0.0,
         };
         let mut b = a.clone();
         b.base = [0.40, 0.20, 0.10];
@@ -2517,6 +2683,7 @@ mod tests {
             mid_a: 0.0,
             mid_b: 0.0,
             grade: 1.0,
+            shoulder: 0.0,
         };
         let bare = FrameStats { mask_measured: false, base: [0.50, 0.50, 0.50], rebate_level: 0.50, ..measured.clone() };
         let shared = share_roll(&[measured.clone(), bare.clone(), bare.clone()]);
@@ -2612,7 +2779,7 @@ mod tests {
     }
 
     #[test]
-    fn a_thin_orange_negative_keeps_the_sprocket_frame() {
+    fn a_thin_orange_negative_keeps_the_sprocket_frame_and_stays_above_black() {
         let (w, h) = (120usize, 90usize);
         let film_px = [0.80f32, 0.35, 0.12];
         let img = Rgb32f::from_fn(w, h, |x, y| {
@@ -2632,5 +2799,41 @@ mod tests {
         let analysis = analyze_image(&img, &Film::default());
         assert!(analysis.frame_error.is_none(), "{:?}", analysis.frame_error);
         assert!(!analysis.film.frame.is_full(), "the sprocket gate was ignored");
+        let k = FilmKernel::from_film(&analysis.film);
+        let y = |p: [f32; 3]| 0.2627 * p[0] + 0.6780 * p[1] + 0.0593 * p[2];
+        let body = k.apply(film_px.map(|c| c * 10f32.powf(-0.22)));
+        let hi = k.apply(film_px.map(|c| c * 10f32.powf(-1.15)));
+        assert!(y(body) > 0.08, "the picture printed black {body:?} ev {} grade {}", analysis.film.exposure, analysis.film.grade);
+        assert!(y(hi) > y(body), "the dense patch is darker than the field {hi:?} {body:?}");
+    }
+
+    #[test]
+    fn the_middle_prints_at_middle_grey_and_the_bright_end_stays_on_the_paper() {
+        let orange = [0.80f32, 0.38, 0.14];
+        let img = Rgb32f::from_fn(90, 60, |x, y| {
+            if x < 6 || y < 6 || x >= 84 || y >= 54 {
+                orange
+            } else {
+                let d = 0.12 + 1.2 * (x - 6) as f32 / 77.0;
+                orange.map(|c| c * 10f32.powf(-d))
+            }
+        });
+        let analysis = analyze_image(&img, &Film { scan: FilmScan::Flat, ..Film::default() });
+        let k = FilmKernel::from_film(&analysis.film);
+        let y = |p: [f32; 3]| 0.2627 * p[0] + 0.6780 * p[1] + 0.0593 * p[2];
+        let mut ys = Vec::new();
+        for (i, p) in img.data.iter().enumerate() {
+            let x = (i % 90) as f64 / 90.0;
+            let py = (i / 90) as f64 / 60.0;
+            if inside_frame(&analysis.film.frame, x, py) {
+                ys.push(y(k.apply(*p)));
+            }
+        }
+        assert!(ys.len() > 8, "the frame held nothing");
+        ys.sort_by(|a, b| a.total_cmp(b));
+        let at = |q: f32| ys[((ys.len() - 1) as f32 * q).round() as usize];
+        let (mid, bright) = (at(0.50), at(0.98));
+        assert!((mid - 0.18).abs() < 0.06, "middle {mid} ev {} grade {}", analysis.film.exposure, analysis.film.grade);
+        assert!(bright < 1.35 && bright > 0.45, "bright end {bright} shoulder {}", analysis.film.shoulder);
     }
 }

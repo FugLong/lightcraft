@@ -187,13 +187,23 @@ fn film_k(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) 
         let white = vec3<f32>(pf(31u), pf(32u), pf(33u));
         let axis = max(vec3<f32>(pf(41u), pf(42u), pf(43u)), vec3<f32>(0.05));
         let straight = max(d - fog, vec3<f32>(0.0)) / axis;
-        // pf(9) is the film gamma on a negative (FILM_GAMMA / grade). White maps to 1;
-        // density above it stays above 1, capped at 64.
+        // pf(9) is the film gamma on a negative (FILM_GAMMA / grade). The brightest channel
+        // is the curve white. A near-neutral bright end is gained so each channel's white
+        // density prints at 1, fading in toward that end. Equal whites leave the gain at 1.
+        // Mono skips it. Density above the white stays above 1.
         let gam = max(pf(9u), 0.05);
-        let w = max(max(white.x, white.y), white.z);
-        let scale = max(pow(10.0, min(w / gam, 8.0)) - 1.0, 1e-4);
+        let curve = max(max(max(white.x, white.y), white.z), 0.05);
+        let scale = max(pow(10.0, min(curve / gam, 8.0)) - 1.0, 1e-4);
         let e = min(straight / gam, vec3<f32>(8.0));
         scene = min((pow(vec3<f32>(10.0), e) - vec3<f32>(1.0)) / scale, vec3<f32>(64.0));
+        if ((flags & 2u) == 0u) {
+            let straight_y = 0.2627 * straight.x + 0.6780 * straight.y + 0.0593 * straight.z;
+            let t = sstep(curve * 0.62, curve * 0.92, straight_y);
+            let channel = max(clamp(white, vec3<f32>(curve - 0.45), vec3<f32>(curve)), vec3<f32>(0.05));
+            let at_e = min(channel / gam, vec3<f32>(8.0));
+            let at = max((pow(vec3<f32>(10.0), at_e) - vec3<f32>(1.0)) / scale, vec3<f32>(1e-4));
+            scene = min(scene * (vec3<f32>(1.0) + (vec3<f32>(1.0) / at - vec3<f32>(1.0)) * t), vec3<f32>(64.0));
+        }
         scene = scene * vec3<f32>(pf(37u), pf(38u), pf(39u));
         let chroma = pf(40u);
         if (abs(chroma - 1.0) > 1e-4) {

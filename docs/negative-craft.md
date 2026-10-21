@@ -69,10 +69,19 @@ the mask both classify that stored scan, so a pale rebate that only looks pale b
 still the base, stored as the transmission.
 
 A colour negative's straight line is `D ≈ 0.60 · log10(exposure)`. The positive is that exposure,
-`(10^(D / γ) − 1)` divided by the same expression at the bright end of the frame, so that end is
-scene light 1 and anything denser stays above 1 for the tone curve. It is not clipped first.
-Contrast changes γ (`0.60 / grade`). Exposure then puts the middle of the frame near 0.18.
-Blacks are an offset. A shoulder, when a look sets one, rolls off highlights after that.
+`(10^(D / γ) − 1)` divided by the same expression at a reference density. Density above that
+reference stays above 1. It is not clipped first.
+Contrast changes γ (`0.60 / grade`). Exposure is the scale that puts the middle of the picture on
+middle grey, 0.18, the same grey the tone map is built around. Convert also sets contrast so the
+bright end of that picture is 1: exposure and the white point are one scale, and contrast is the
+slope, so both have to be solved or the print can only be moved up and down. A negative that is
+still too steep at the softest grade keeps that grade, and a shoulder rolls the bright end back
+to 1 without moving the middle. Margin, a look, and Match roll keep the contrast and solve
+exposure again. A bright end that is close to neutral is gained
+per channel, fading in toward that end, so a small bend does not tint the whites. A saturated
+bright end, such as a blue sky, is left alone. Lowering Exposure does not bring a corrected
+tint back. Blacks are an offset. A shoulder, when a look sets one, rolls off
+highlights after that.
 
 A color head still has to print a gray subject gray. Auto fits `D_c = fog_c + axis_c · D_green`
 on bin medians of the density cloud, and keeps the fit only when the cast has the same sign at the

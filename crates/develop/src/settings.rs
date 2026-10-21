@@ -1411,7 +1411,7 @@ pub struct Film {
     /// Low end of the print, in density above the mask. Zero keeps the film border black.
     /// Kept as the shared black when [`Self::white_r`] is still zero.
     pub d_lo: f64,
-    /// Density that the print maps to white. Auto writes the same value on every channel.
+    /// Density of the bright end. The curve uses the brightest channel of [`Self::white`].
     pub d_hi: f64,
     /// Intercept of the gray axis, `D_c = fog_c + axis_c * D_green`. Zero until Auto.
     /// Never negative, so the mask stays black.
@@ -1430,6 +1430,7 @@ pub struct Film {
     pub mid_a: f64,
     pub mid_b: f64,
     /// Per-channel density that prints white. All zero means "use `d_hi` for every channel".
+    /// Auto keeps these near `d_hi`, shifted by the bright end's channel offsets, so that end is neutral.
     pub white_r: f64,
     pub white_g: f64,
     pub white_b: f64,
