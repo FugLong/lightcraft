@@ -28,7 +28,10 @@ already a positive.
   Paper, Cinematic) changes color and the paper shoulder. It does not replace the border, the
   gray axis, exposure, contrast, or whether conversion is on. **Exposure**, **Contrast**, and
   **Blacks** place the print. **Margin** is a percent trimmed from each edge of the frame before
-  that measurement. The blank film outside the frame stays the mask. Cropping does not change it.
+  that measurement. The blank film outside the frame stays the mask. **Auto** under Crop cuts to the
+  picture and does not reprint. A crop drawn before **Convert** is the whole measurement: only that
+  rectangle is read, and the surround is ignored. Blank film still inside it is the base. With none
+  there, the base starts neutral, so a mask taken from the discarded surround cannot tint the print.
   On a color negative, **Temp**, **Tint**, and the shadow, midtone,
   and highlight balances trim color. A black-and-white negative stops at the print sliders: the
   color looks stay off, so they cannot tint the gray. **More** on a color negative keeps the cast

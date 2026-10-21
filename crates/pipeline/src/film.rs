@@ -566,6 +566,94 @@ pub fn analyze_image(img: &Rgb32f, film: &Film) -> Analysis {
     Analysis { film, stats, frame_error }
 }
 
+/// Convert a raster the user already cropped. The crop is the picture: nothing outside it is
+/// read, and a missing rebate is not an error. Blank film still inside the crop is the base.
+/// With none there, the base starts neutral, so a mask measured from the discarded surround
+/// cannot tint the print.
+pub fn analyze_picture(img: &Rgb32f, film: &Film) -> Analysis {
+    let mut film = film.clone();
+    film.frame = FilmFrame::default();
+    film.set_base([1.0, 1.0, 1.0]);
+    let stats = measure(img, &film);
+    film.set_base(stats.base);
+    film.set_gamma(stats.gamma);
+    film.d_lo = stats.d_lo;
+    film.d_hi = stats.d_hi;
+    film.set_fog(stats.fog);
+    film.set_axis(stats.axis);
+    film.set_white(stats.white);
+    film.mid_a = stats.mid_a;
+    film.mid_b = stats.mid_b;
+    film.grade = stats.grade;
+    film.exposure = stats.exposure;
+    if film.stock.negative() {
+        film.shoulder = stats.shoulder;
+    }
+    film.enabled = true;
+    Analysis { film, stats, frame_error: None }
+}
+
+/// The pixels inside `crop`, in crop coordinates. An uncropped scan is returned unchanged.
+/// An angled crop is sampled nearest-pixel, so a pixel outside the crop is not blended in.
+pub fn within_crop(img: &Rgb32f, crop: CropGeometry) -> Rgb32f {
+    if crop.is_identity() || img.width == 0 || img.height == 0 {
+        return img.clone();
+    }
+    let w = img.width as f64;
+    let h = img.height as f64;
+    let finite = [crop.rect.x0, crop.rect.y0, crop.rect.x1, crop.rect.y1, crop.angle].iter().all(|v| v.is_finite());
+    if !finite {
+        return img.clone();
+    }
+    let r = crop.rect_px(w, h);
+    let (rw, rh) = (r.width(), r.height());
+    if !rw.is_finite() || !rh.is_finite() || rw < 1.0 || rh < 1.0 {
+        return img.clone();
+    }
+    if crop.angle.abs() < 0.05 {
+        let x0 = r.x0.round().clamp(0.0, (w - 1.0).max(0.0)) as usize;
+        let y0 = r.y0.round().clamp(0.0, (h - 1.0).max(0.0)) as usize;
+        let x1 = r.x1.round().clamp(x0 as f64 + 1.0, w) as usize;
+        let y1 = r.y1.round().clamp(y0 as f64 + 1.0, h) as usize;
+        let (ow, oh) = (x1 - x0, y1 - y0);
+        let mut out = Rgb32f::new(ow, oh);
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let Some(p) = img.data.get(y.saturating_mul(img.width).saturating_add(x)) else { continue };
+                let dx = x - x0;
+                let dy = y - y0;
+                if let Some(slot) = out.data.get_mut(dy.saturating_mul(ow).saturating_add(dx)) {
+                    *slot = *p;
+                }
+            }
+        }
+        return out;
+    }
+    let out_w = (rw.round() as usize).clamp(1, img.width.max(1));
+    let out_h = (rh.round() as usize).clamp(1, img.height.max(1));
+    let map = crop.output_to_source(w, h, out_w as f64, out_h as f64);
+    let mut out = Rgb32f::new(out_w, out_h);
+    for y in 0..out_h {
+        for x in 0..out_w {
+            let p = map.apply(Point::new(x as f64 + 0.5, y as f64 + 0.5));
+            if !p.x.is_finite() || !p.y.is_finite() {
+                continue;
+            }
+            let sx = p.x.floor();
+            let sy = p.y.floor();
+            if sx < 0.0 || sy < 0.0 || sx >= w || sy >= h {
+                continue;
+            }
+            let (sx, sy) = (sx as usize, sy as usize);
+            let Some(px) = img.data.get(sy.saturating_mul(img.width).saturating_add(sx)) else { continue };
+            if let Some(slot) = out.data.get_mut(y.saturating_mul(out_w).saturating_add(x)) {
+                *slot = *px;
+            }
+        }
+    }
+    out
+}
+
 /// Density histogram and rebate readout for the current frame, without writing settings.
 pub fn inspect(img: &Rgb32f, film: &Film) -> FrameStats {
     measure(img, film)
@@ -2835,5 +2923,34 @@ mod tests {
         let (mid, bright) = (at(0.50), at(0.98));
         assert!((mid - 0.18).abs() < 0.06, "middle {mid} ev {} grade {}", analysis.film.exposure, analysis.film.grade);
         assert!(bright < 1.35 && bright > 0.45, "bright end {bright} shoulder {}", analysis.film.shoulder);
+    }
+
+    #[test]
+    fn a_crop_is_the_whole_measurement_and_the_surround_is_not() {
+        let orange = [0.80f32, 0.38, 0.14];
+        let junk = [0.15f32, 0.75, 0.20];
+        let picture = orange.map(|c| c * 10f32.powf(-0.45));
+        let img = Rgb32f::from_fn(80, 40, |x, y| {
+            if x < 24 {
+                junk
+            } else if x >= 76 || !(3..37).contains(&y) {
+                orange
+            } else {
+                picture
+            }
+        });
+        let crop = CropGeometry { rect: Rect::new(24.0 / 80.0, 0.0, 1.0, 1.0), angle: 0.0 };
+        let cut = within_crop(&img, crop);
+        assert!(cut.width < img.width, "crop kept the surround");
+        assert!(cut.data.iter().all(|p| p[1] < 0.5), "the green surround was copied in");
+        let film = Film { scan: FilmScan::Flat, ..Film::default() };
+        let full = analyze_image(&img, &film);
+        let part = analyze_picture(&cut, &film);
+        assert!(part.frame_error.is_none(), "a crop with no separate rebate is not an error");
+        let y = |p: [f32; 3]| 0.2627 * p[0] + 0.6780 * p[1] + 0.0593 * p[2];
+        let blown = y(FilmKernel::from_film(&full.film).apply(picture));
+        let placed = y(FilmKernel::from_film(&part.film).apply(picture));
+        assert!((placed - 0.18).abs() < 0.08, "the crop did not place the picture {placed}");
+        assert!((blown - placed).abs() > 0.2, "the surround did not move the print {blown} vs {placed}");
     }
 }

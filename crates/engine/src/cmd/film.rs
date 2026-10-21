@@ -18,7 +18,7 @@ fn commit_measured(s: &mut Session, id: PhotoId, d: DevelopSettings, label: &str
     // Measure first, then commit once. A failed read leaves the previous print, and one undo
     // restores both the source choice and the measurement it produced.
     let img = scanner_image(s, id, cmd)?;
-    let analysis = film::analyze_image(&img, &d.film);
+    let analysis = analyze_view(&img, d.crop.geometry, &d.film);
     let out = stats_json(&analysis.stats, analysis.frame_error.as_deref());
     let mut d = d;
     d.film = analysis.film;
@@ -41,7 +41,7 @@ pub(crate) fn scanner_image(s: &mut Session, id: PhotoId, cmd: &str) -> Result<l
 fn run_analyze(s: &mut Session, id: PhotoId, cmd: &str) -> Result<Value> {
     let img = scanner_image(s, id, cmd)?;
     let d = s.develop_of(id).unwrap_or_default();
-    let analysis = film::analyze_image(&img, &d.film);
+    let analysis = analyze_view(&img, d.crop.geometry, &d.film);
     let out = stats_json(&analysis.stats, analysis.frame_error.as_deref());
     let mut d = (*d).clone();
     d.film = analysis.film;
@@ -54,11 +54,18 @@ fn active(s: &Session, c: &str) -> Result<PhotoId> {
 }
 
 /// Place the print again from the current frame and margin. The mask base and paper contrast stay.
+/// A crop is the whole measurement: pixels outside it are not in the sample.
 pub(crate) fn reprint(img: &lightcraft_raster::Rgb32f, d: &mut DevelopSettings) {
-    if film::trimmed_sample_count(img, &d.film) < 8 {
+    let cropped = if d.crop.geometry.is_identity() { None } else { Some(film::within_crop(img, d.crop.geometry)) };
+    let img = cropped.as_ref().unwrap_or(img);
+    let mut film = d.film.clone();
+    if cropped.is_some() {
+        film.frame = FilmFrame::default();
+    }
+    if film::trimmed_sample_count(img, &film) < 8 {
         return;
     }
-    let placed = film::place(img, &d.film);
+    let placed = film::place(img, &film);
     d.film.d_lo = placed.d_lo;
     d.film.d_hi = placed.d_hi;
     d.film.set_fog(placed.fog);
@@ -76,6 +83,21 @@ fn commit(s: &mut Session, id: PhotoId, d: DevelopSettings, label: &str) -> Resu
 
 fn oriented(src: &std::sync::Arc<lightcraft_raster::Rgb32f>, d: &DevelopSettings) -> lightcraft_raster::Rgb32f {
     src.oriented(d.orientation)
+}
+
+/// Convert sees the current crop and nothing outside it. An uncropped scan is the whole thumbnail.
+fn analyze_view(img: &lightcraft_raster::Rgb32f, crop: lightcraft_geom::CropGeometry, film: &Film) -> film::Analysis {
+    if crop.is_identity() { film::analyze_image(img, film) } else { film::analyze_picture(&film::within_crop(img, crop), film) }
+}
+
+/// The raster and frame a reprint measures. The crop replaces the rebate quad for that measurement.
+fn view_for_measure(img: &lightcraft_raster::Rgb32f, d: &DevelopSettings) -> (lightcraft_raster::Rgb32f, Film) {
+    if d.crop.geometry.is_identity() {
+        return (img.clone(), d.film.clone());
+    }
+    let mut film = d.film.clone();
+    film.frame = FilmFrame::default();
+    (film::within_crop(img, d.crop.geometry), film)
 }
 
 fn stats_json(stats: &film::FrameStats, frame_error: Option<&str>) -> Value {
@@ -121,7 +143,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     let d = s.develop_of(*id).unwrap_or_default();
                     let mut film = d.film.clone();
                     film.intent = intent;
-                    let analysis = film::analyze_image(&img, &film);
+                    let analysis = analyze_view(&img, d.crop.geometry, &film);
                     prepared.push((*id, analysis));
                 }
                 let stats: Vec<_> = prepared.iter().map(|(_, a)| a.stats.clone()).collect();
@@ -136,6 +158,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     d.film.set_fog(share.fog);
                     d.film.set_axis(share.axis);
                     let img = scanner_image(s, *id, "film.analyzeRoll")?;
+                    let img = film::within_crop(&img, d.crop.geometry);
                     let placed = film::place_keeping_axis(&img, &d.film);
                     d.film.d_lo = placed.d_lo;
                     d.film.d_hi = placed.d_hi;
@@ -169,7 +192,8 @@ pub fn specs() -> Vec<CommandSpec> {
                 let id = active(s, "film.inspect")?;
                 let img = scanner_image(s, id, "film.inspect")?;
                 let d = s.develop_of(id).unwrap_or_default();
-                Ok(stats_json(&film::inspect(&img, &d.film), None))
+                let (img, film) = view_for_measure(&img, &d);
+                Ok(stats_json(&film::inspect(&img, &film), None))
             }
         ),
         cmd!("film.setEnabled", "Negative Craft On", [], None, "{enabled: bool}", has_active, |s, p| {
@@ -514,6 +538,41 @@ mod tests {
         assert!((film.grade - 1.4).abs() < 1e-9, "margin replaced contrast");
         let kept = film.base();
         assert!((kept[0] - mask[0]).abs() < 1e-9 && (kept[2] - mask[2]).abs() < 1e-9, "margin moved the mask");
+    }
+
+    #[test]
+    fn convert_after_a_crop_ignores_the_surround() {
+        use std::sync::Arc;
+
+        use lightcraft_raster::Rgb32f;
+
+        use crate::media::SourceLevel;
+
+        let mut s = crate::Session::with_demo();
+        let id = s.active().expect("demo photo");
+        let orange = [0.80f32, 0.38, 0.14];
+        let junk = [0.15f32, 0.75, 0.20];
+        let picture = orange.map(|c| c * 10f32.powf(-0.45));
+        let image = Arc::new(Rgb32f::from_fn(80, 40, |x, y| {
+            if x < 24 {
+                junk
+            } else if x >= 76 || !(3..37).contains(&y) {
+                orange
+            } else {
+                picture
+            }
+        }));
+        for level in [SourceLevel::Thumb, SourceLevel::Preview, SourceLevel::Full] {
+            s.media.insert(id, level, image.clone());
+        }
+        s.execute("film.analyze", &json!({})).expect("full");
+        let open = s.develop_of(id).expect("settings").film.exposure;
+        let mut d = (*s.develop_of(id).expect("settings")).clone();
+        d.crop.geometry.rect = lightcraft_geom::Rect::new(24.0 / 80.0, 0.0, 1.0, 1.0);
+        s.set_develop(id, d, "Crop").expect("crop");
+        s.execute("film.analyze", &json!({})).expect("cropped");
+        let cut = s.develop_of(id).expect("settings").film.exposure;
+        assert!((open - cut).abs() > 0.15, "the surround still placed the print {open} -> {cut}");
     }
 
     #[test]
