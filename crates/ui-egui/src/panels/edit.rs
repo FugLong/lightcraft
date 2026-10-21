@@ -658,12 +658,6 @@ fn film_crop(app: &mut LightcraftApp, ui: &mut egui::Ui) {
             let _ = app.run("panel.crop", json!({}));
         }
     });
-    ui.add_space(6.0);
-    ui.label(
-        RichText::new(crate::i18n::tr("Margin trims each edge of the frame before the picture is measured. The border stays the blank film."))
-            .font(t.font(12.0))
-            .color(t.text_dim),
-    );
 }
 
 fn film_tools(app: &mut LightcraftApp, ui: &mut egui::Ui, d: &DevelopSettings) {
