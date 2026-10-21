@@ -425,6 +425,65 @@ mod tests {
     }
 
     #[test]
+    fn auto_tone_and_bw_mix_read_the_print_not_the_negative() {
+        use std::sync::Arc;
+
+        use lightcraft_develop::Film;
+        use lightcraft_raster::Rgb32f;
+
+        use crate::media::SourceLevel;
+
+        let mut s = crate::Session::with_demo();
+        let id = s.active().expect("demo photo");
+        // The blank film itself: bright orange, and the print of that base is black.
+        let mask = [0.85f32, 0.40, 0.16];
+        let image = Arc::new(Rgb32f::filled(32, 32, mask));
+        for level in [SourceLevel::Thumb, SourceLevel::Preview, SourceLevel::Full] {
+            s.media.insert(id, level, image.clone());
+        }
+        let exposure = |v: &serde_json::Value| v.get("exposure").and_then(|n| n.as_f64()).expect("exposure");
+        let band = |v: &serde_json::Value, i: usize| {
+            v.get("mix").and_then(|m| m.as_array()).and_then(|a| a.get(i)).and_then(|n| n.as_f64()).expect("mix band")
+        };
+        let off = s.execute("develop.auto", &json!({})).expect("auto off");
+        let exposure_off = exposure(&off);
+
+        let mut d = (*s.develop_of(id).expect("settings")).clone();
+        d.film = Film { enabled: true, scan: lightcraft_develop::FilmScan::Flat, ..Film::default() };
+        d.film.set_base([0.85, 0.40, 0.16]);
+        s.set_develop(id, d, "Film").expect("settings");
+
+        let on = s.execute("develop.auto", &json!({})).expect("auto on");
+        let exposure_on = exposure(&on);
+        assert!(exposure_off < 0.0, "the orange mask looked dark: {exposure_off}");
+        assert!(exposure_on > 1.0, "auto toned the negative, not the black print: {exposure_on} (off {exposure_off})");
+
+        // A light yellow beside a dark blue. On the negative, yellow is the light band and blue the
+        // dark one. The print is a different picture, so that mix cannot come back the same.
+        // Exposure is cleared so it does not crush either.
+        let chart = Rgb32f::from_fn(64, 32, |x, _| if x < 32 { [0.55, 0.50, 0.05] } else { [0.01, 0.02, 0.12] });
+        let chart = Arc::new(chart);
+        for level in [SourceLevel::Thumb, SourceLevel::Preview, SourceLevel::Full] {
+            s.media.insert(id, level, chart.clone());
+        }
+        let mut d = (*s.develop_of(id).expect("settings")).clone();
+        d.film.enabled = false;
+        d.light.exposure = 0.0;
+        s.set_develop(id, d, "Film").expect("settings");
+        let mix_off = s.execute("develop.autoBwMix", &json!({})).expect("mix off");
+        let mut d = (*s.develop_of(id).expect("settings")).clone();
+        d.film.enabled = true;
+        d.film.scan = lightcraft_develop::FilmScan::Flat;
+        d.film.set_base([1.0, 1.0, 1.0]);
+        d.light.exposure = 0.0;
+        s.set_develop(id, d, "Film").expect("settings");
+        let mix_on = s.execute("develop.autoBwMix", &json!({})).expect("mix on");
+        let (yellow_off, blue_off) = (band(&mix_off, 2), band(&mix_off, 5));
+        assert!(yellow_off > 0.0 && blue_off < 0.0, "the negative mix did not separate {mix_off}");
+        assert_ne!(mix_off.get("mix"), mix_on.get("mix"), "the mix still saw the negative {mix_on}");
+    }
+
+    #[test]
     fn margin_reprints_and_keeps_the_stored_mask() {
         use std::sync::Arc;
 

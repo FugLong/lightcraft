@@ -39,5 +39,6 @@ Select the frames. Open **More** and click **Match roll**. Each frame needs its 
 ## Good to know
 
 - A raw scan holds the mask more faithfully than a JPEG of the same negative.
+- **Auto** in Light, white balance, and **Auto** black-and-white mix read the print, so they do not balance the orange mask.
 - In **More**, leave the scan gamma on **Linear** unless the file is still stored with gamma 1.8 or 2.2.
 - **More** also holds **Saturation**, **Shoulder**, the mask numbers, and **Shadow** and **Highlight** picks for a dark neutral and a light one.

@@ -12,8 +12,8 @@
   working-space conversion. How to scan and convert is in `docs/user/guides/convert-a-negative.md`.
 - **Margin** trims each edge of the detected frame before the picture is measured. The blank film
   outside the frame stays the border. Cropping the photo does not change that measurement.
-- White balance, Auto and the selector, reads the converted print. A pick on the negative no longer
-  solves temperature and tint for the orange mask.
+- White balance, Auto tone, Auto black-and-white mix, and the white-balance selector read the
+  converted print. A pick on the negative no longer solves temperature and tint for the orange mask.
 - The catalog format is now version 11 (`DevelopSettings.film`, and `Film.inset` when Margin is not
   zero). A converted photo writes those settings into the library. Once this version has opened a
   library, older builds refuse it instead of loading the photo and dropping the conversion. A photo

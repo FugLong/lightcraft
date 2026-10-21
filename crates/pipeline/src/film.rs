@@ -377,6 +377,20 @@ pub fn apply_before_white_balance(img: &mut Rgb32f, info: &SourceInfo, film: &Fi
     }
 }
 
+/// The image an automatic adjustment reads.
+///
+/// Disabled film returns `img`. Otherwise this is the print, in the working space, before white
+/// balance: the same step as the render. Auto tone, white balance, and the black-and-white mix
+/// use it, so they do not solve the orange mask.
+pub fn for_auto<'a>(img: &'a Rgb32f, info: &SourceInfo, film: &Film) -> std::borrow::Cow<'a, Rgb32f> {
+    if !film.enabled {
+        return std::borrow::Cow::Borrowed(img);
+    }
+    let mut out = img.clone();
+    apply_before_white_balance(&mut out, info, film);
+    std::borrow::Cow::Owned(out)
+}
+
 /// The scan encoding, as [`FilmKernel::apply`] removes it. Linear is unchanged. Gamma 1.8 and 2.2
 /// raise each stored channel to that power, so a measurement and the print see one transmission.
 pub fn transmission(sample: [f64; 3], capture: FilmCapture) -> [f64; 3] {
@@ -534,16 +548,17 @@ pub fn inspect(img: &Rgb32f, film: &Film) -> FrameStats {
     measure(img, film)
 }
 
-/// Fit a quad to the rebate. `None` when the border is missing or the fit swallows the picture.
-pub fn detect_frame(img: &Rgb32f, stock: FilmStock) -> Option<FilmFrame> {
-    if img.width < 8 || img.height < 8 {
-        return None;
-    }
-    let small = preview(img);
-    let w = small.width;
-    let h = small.height;
-    let n = w.checked_mul(h)?;
+/// Film connected to the image edge. The same colour inside the picture is left out.
+fn rebate_mask(img: &Rgb32f, stock: FilmStock) -> Vec<bool> {
+    let w = img.width;
+    let h = img.height;
+    let Some(n) = w.checked_mul(h) else {
+        return Vec::new();
+    };
     let mut rebate = vec![false; n];
+    if w < 2 || h < 2 {
+        return rebate;
+    }
     let mut queue = std::collections::VecDeque::new();
     for y in 0..h {
         for x in 0..w {
@@ -551,7 +566,7 @@ pub fn detect_frame(img: &Rgb32f, stock: FilmStock) -> Option<FilmFrame> {
                 continue;
             }
             let i = y * w + x;
-            if small.data.get(i).is_some_and(|p| is_outside(*p, stock, true)) {
+            if img.data.get(i).is_some_and(|p| is_outside(*p, stock, true)) {
                 if let Some(slot) = rebate.get_mut(i) {
                     *slot = true;
                 }
@@ -559,9 +574,7 @@ pub fn detect_frame(img: &Rgb32f, stock: FilmStock) -> Option<FilmFrame> {
             }
         }
     }
-    let mut count = 0usize;
     while let Some(i) = queue.pop_front() {
-        count += 1;
         let x = i % w;
         let y = i / w;
         for (dx, dy) in [(-1isize, 0), (1, 0), (0, -1), (0, 1)] {
@@ -575,7 +588,7 @@ pub fn detect_frame(img: &Rgb32f, stock: FilmStock) -> Option<FilmFrame> {
                 continue;
             }
             let rim = in_rim(nx.max(0) as usize, ny.max(0) as usize, w, h);
-            if small.data.get(j).is_some_and(|p| is_outside(*p, stock, rim))
+            if img.data.get(j).is_some_and(|p| is_outside(*p, stock, rim))
                 && let Some(slot) = rebate.get_mut(j)
             {
                 *slot = true;
@@ -583,6 +596,22 @@ pub fn detect_frame(img: &Rgb32f, stock: FilmStock) -> Option<FilmFrame> {
             }
         }
     }
+    rebate
+}
+
+/// Fit a quad to the rebate. `None` when the border is missing or the fit swallows the picture.
+pub fn detect_frame(img: &Rgb32f, stock: FilmStock) -> Option<FilmFrame> {
+    if img.width < 8 || img.height < 8 {
+        return None;
+    }
+    let small = preview(img);
+    let rebate = rebate_mask(&small, stock);
+    let n = rebate.len();
+    if n == 0 {
+        return None;
+    }
+    let (w, h) = (small.width, small.height);
+    let count = rebate.iter().filter(|on| **on).count();
     let frac = count as f64 / n as f64;
     if !(0.005..0.80).contains(&frac) {
         return None;
@@ -1206,7 +1235,7 @@ impl Placement {
 fn mask_base(img: &Rgb32f, frame: &FilmFrame, stock: FilmStock, interior: &[[f32; 3]], fallback: [f64; 3]) -> ([f64; 3], bool, bool) {
     // The whole scan has no picture edge. Blank film is what touches the scan edge, same as frame
     // detection. Orange that sits only in the picture is not a border.
-    let edge = if frame.is_full() { Some(edge_rebate(img, stock)) } else { None };
+    let edge = if frame.is_full() { Some(rebate_mask(img, stock)) } else { None };
     let mut outside_orange = Vec::new();
     let mut outside_clear = Vec::new();
     let mut outside_pale = Vec::new();
@@ -1261,57 +1290,6 @@ fn mask_base(img: &Rgb32f, frame: &FilmFrame, stock: FilmStock, interior: &[[f32
         return (b, false, false);
     }
     bright_tail(interior, 0.97).map(|b| (b, false, false)).unwrap_or(([1.0, 1.0, 1.0], false, false))
-}
-
-/// Film connected to the scan edge. A patch of the same color in the picture is left out.
-fn edge_rebate(img: &Rgb32f, stock: FilmStock) -> Vec<bool> {
-    let w = img.width;
-    let h = img.height;
-    let Some(n) = w.checked_mul(h) else {
-        return Vec::new();
-    };
-    let mut rebate = vec![false; n];
-    if w < 2 || h < 2 {
-        return rebate;
-    }
-    let mut queue = std::collections::VecDeque::new();
-    for y in 0..h {
-        for x in 0..w {
-            if x != 0 && y != 0 && x + 1 != w && y + 1 != h {
-                continue;
-            }
-            let i = y * w + x;
-            if img.data.get(i).is_some_and(|p| is_outside(*p, stock, true)) {
-                if let Some(slot) = rebate.get_mut(i) {
-                    *slot = true;
-                }
-                queue.push_back(i);
-            }
-        }
-    }
-    while let Some(i) = queue.pop_front() {
-        let x = i % w;
-        let y = i / w;
-        for (dx, dy) in [(-1isize, 0), (1, 0), (0, -1), (0, 1)] {
-            let nx = x as isize + dx;
-            let ny = y as isize + dy;
-            if nx < 0 || ny < 0 || nx >= w as isize || ny >= h as isize {
-                continue;
-            }
-            let j = ny as usize * w + nx as usize;
-            if rebate.get(j).copied().unwrap_or(true) {
-                continue;
-            }
-            let rim = in_rim(nx.max(0) as usize, ny.max(0) as usize, w, h);
-            if img.data.get(j).is_some_and(|p| is_outside(*p, stock, rim))
-                && let Some(slot) = rebate.get_mut(j)
-            {
-                *slot = true;
-                queue.push_back(j);
-            }
-        }
-    }
-    rebate
 }
 
 /// Clear film near the brightest sample, averaged from the half with the lowest blue/red.
@@ -1888,13 +1866,19 @@ mod tests {
         film.inset = 25.0;
         let tight = place(&img, &film);
         assert!((open.grade - 1.4).abs() < 1e-9 && (tight.grade - open.grade).abs() < 1e-9, "margin replaced contrast");
-        let moved = (open.exposure - tight.exposure).abs() > 0.05 || (open.d_hi - tight.d_hi).abs() > 0.02 || open.fog != tight.fog || open.axis != tight.axis;
+        let moved = (open.exposure - tight.exposure).abs() > 0.05
+            || (open.d_hi - tight.d_hi).abs() > 0.02
+            || open.fog != tight.fog
+            || open.axis != tight.axis;
         assert!(moved, "margin left the print unchanged: {open:?} vs {tight:?}");
         let mut full = film.clone();
         full.inset = 0.0;
         let mask_open = super::measure(&img, &full).base;
         let mask_tight = super::measure(&img, &film).base;
-        assert!((mask_open[0] - mask_tight[0]).abs() < 1e-5 && (mask_open[2] - mask_tight[2]).abs() < 1e-5, "margin moved the mask {mask_open:?} {mask_tight:?}");
+        assert!(
+            (mask_open[0] - mask_tight[0]).abs() < 1e-5 && (mask_open[2] - mask_tight[2]).abs() < 1e-5,
+            "margin moved the mask {mask_open:?} {mask_tight:?}"
+        );
         let tiny = Rgb32f::filled(10, 10, picture);
         let mut kept = film.clone();
         kept.inset = 40.0;

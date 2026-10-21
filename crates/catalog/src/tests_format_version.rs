@@ -241,8 +241,9 @@ fn a_converted_photo_round_trips_and_a_v9_reader_refuses_it() {
     j.snapshot(&c).unwrap();
     drop(j);
 
-    assert!(VERSION > BEFORE_FILM, "film settings need a catalog format newer than v{BEFORE_FILM}");
-    assert_eq!(snapshot_version(&m), u64::from(VERSION));
+    let written = snapshot_version(&m);
+    assert!(written > u64::from(BEFORE_FILM), "film settings need a catalog format newer than v{BEFORE_FILM}, wrote {written}");
+    assert_eq!(written, u64::from(VERSION));
     let snap = String::from_utf8(m.get(SNAPSHOT).unwrap()).unwrap();
     assert!(snap.contains("\"film\""), "the conversion is in the snapshot a v9 reader would open");
 

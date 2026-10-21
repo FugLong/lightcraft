@@ -389,7 +389,8 @@ pub fn specs() -> Vec<CommandSpec> {
                 let src = s.source_now(id, SourceLevel::Thumb).map_err(|e| bad("develop.autoBwMix", e))?;
                 let info = s.source_info(id);
                 let d = s.develop_of(id).unwrap_or_default();
-                let m = lightcraft_pipeline::auto::auto_bw_mix(&src, &info, &d);
+                let seen = lightcraft_pipeline::film::for_auto(&src, &info, &d.film);
+                let m = lightcraft_pipeline::auto::auto_bw_mix(&seen, &info, &d);
                 edit(s, "develop.autoBwMix", "Auto B&W Mix", |d| {
                     d.treatment = Treatment::Bw;
                     let b = &mut d.bw_mix;
@@ -404,7 +405,8 @@ pub fn specs() -> Vec<CommandSpec> {
             let src = s.source_now(id, SourceLevel::Thumb).map_err(|e| bad("develop.auto", e))?;
             let info = s.source_info(id);
             let d = s.develop_of(id).unwrap_or_default();
-            let a = lightcraft_pipeline::auto::auto_tone(&src, &info, &d);
+            let seen = lightcraft_pipeline::film::for_auto(&src, &info, &d.film);
+            let a = lightcraft_pipeline::auto::auto_tone(&seen, &info, &d);
             edit(s, "develop.auto", "Auto", |d| {
                 d.light.exposure = a.exposure;
                 d.light.contrast = a.contrast;
@@ -433,11 +435,11 @@ pub fn specs() -> Vec<CommandSpec> {
                 let (mut t, mut tint) = match mode {
                     WbMode::AsShot => (info.as_shot_temp, info.as_shot_tint),
                     WbMode::Auto => {
-                        let mut src = (*s.source_now(id, SourceLevel::Thumb).map_err(|e| bad("develop.wb", e))?).clone();
+                        let src = s.source_now(id, SourceLevel::Thumb).map_err(|e| bad("develop.wb", e))?;
                         let film = s.develop_of(id).unwrap_or_default().film.clone();
                         // Balance the print. The thumbnail is still the negative until this step.
-                        lightcraft_pipeline::film::apply_before_white_balance(&mut src, &info, &film);
-                        lightcraft_pipeline::auto::auto_wb(&src, &info)
+                        let seen = lightcraft_pipeline::film::for_auto(&src, &info, &film);
+                        lightcraft_pipeline::auto::auto_wb(&seen, &info)
                     }
                     m => m
                         .preset()

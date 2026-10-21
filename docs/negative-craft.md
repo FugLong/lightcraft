@@ -2,7 +2,8 @@
 
 `crates/pipeline/src/film.rs` converts a color negative or a black-and-white negative.
 It runs on scene-linear transmission, before white balance, and hands a scene-linear positive to
-the rest of the pipeline. Auto white balance and the selector sample that positive, not the negative. On a raw file with its own colour matrix the density is measured in
+the rest of the pipeline. Auto tone, Auto black-and-white mix, white balance, and the selector sample
+that positive, not the negative. On a raw file with its own colour matrix the density is measured in
 white-balanced camera RGB; the matrix only carries the positive back to Rec.2020. A JPEG is already
 in the working space, so the same curve is only as true as that file. The GPU kernel `film_k`
 (`crates/gpu/src/wgsl/map.wgsl`) is the same formula, including the 43 words from `FilmKernel::words`.
