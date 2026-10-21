@@ -96,8 +96,10 @@ Temperature, tint, and the three band balances are trims on the print, after exp
 does not multiply them. At the end of a slider they move about 0.40 density.
 
 The frame is a quad on the rebate that touches the border: orange for a color negative, bright
-for black-and-white, dark for a slide. Convert stores it. **Auto** under **Crop** uses it, and
-when that quad is the whole scan it finds the picture inside the sprockets instead. When no rebate is found the previous
+for black-and-white, dark for a slide. A thin negative is orange inside the picture too, so that
+flood can swallow the scan. Convert then uses the sprocket and clear-film gate instead, and stores
+whichever quad it found. **Auto** under **Crop** uses it, and when that quad is the whole scan it finds
+the picture inside the sprockets instead. When no rebate is found the previous
 quad is kept and **Convert** and **Auto** say so. A roll shares the mask color and the gray axis. Density is
 already above each frame's own rebate, so the axis is copied rather than scaled. Each frame's
 exposure is solved again with that axis, so the shared gray does not shift the midtone. A frame

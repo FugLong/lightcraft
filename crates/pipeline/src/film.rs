@@ -518,7 +518,9 @@ pub struct Analysis {
 /// Measure `img` with `film`'s frame, stock, and intent, and turn the stage on.
 pub fn analyze_image(img: &Rgb32f, film: &Film) -> Analysis {
     let mut film = film.clone();
-    let frame_error = match detect_frame(img, film.stock) {
+    // A thin negative is orange inside the picture too, so the rebate flood swallows
+    // the frame. The sprocket and clear-film gate still knows where the picture is.
+    let frame_error = match detect_frame(img, film.stock).or_else(|| detect_gate(img, film.stock)) {
         Some(frame) => {
             film.frame = frame;
             None
@@ -2607,5 +2609,28 @@ mod tests {
             assert!((img.data[0][c] - px[c]).abs() < 2e-4, "channel {c}: {:?} vs {px:?}", img.data[0]);
         }
         assert!(scanner_space(&crate::SourceInfo::default()).is_none());
+    }
+
+    #[test]
+    fn a_thin_orange_negative_keeps_the_sprocket_frame() {
+        let (w, h) = (120usize, 90usize);
+        let film_px = [0.80f32, 0.35, 0.12];
+        let img = Rgb32f::from_fn(w, h, |x, y| {
+            let hole_row = (4..18).contains(&y) || (72..86).contains(&y);
+            let hole = hole_row && (x % 12) < 5 && x > 4 && x + 4 < w;
+            if hole {
+                [0.98, 0.98, 0.96]
+            } else if x < 10 || y < 24 || x >= 110 || y >= 66 {
+                if x < 2 || y < 2 || x + 2 >= w || y + 2 >= h { [0.02, 0.01, 0.0] } else { film_px }
+            } else {
+                // Still the mask colour, so the rebate flood swallows the picture. A patch is denser.
+                let d = if (40..70).contains(&x) && (40..55).contains(&y) { 1.15 } else { 0.22 };
+                film_px.map(|c| c * 10f32.powf(-d))
+            }
+        });
+        assert!(detect_frame(&img, FilmStock::ColorNeg).is_none(), "the orange picture swallowed the rebate");
+        let analysis = analyze_image(&img, &Film::default());
+        assert!(analysis.frame_error.is_none(), "{:?}", analysis.frame_error);
+        assert!(!analysis.film.frame.is_full(), "the sprocket gate was ignored");
     }
 }
