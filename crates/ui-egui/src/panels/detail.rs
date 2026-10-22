@@ -573,11 +573,13 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
     if let Some((key, ms)) = shown.filter(|_| plan.window_edge.is_none()) {
         app.drag_scale.observe(key, ms, app.perf.host_frame_ms);
     }
-    // a pinch changes the zoom every frame: keep the sizes of before it until it is quiet
+    // a pinch changes the zoom every frame: keep the sizes of before it until it is quiet,
+    // including the fit of the whole-frame render to the size that was on screen
     let plan = app.size_hold.apply(id, now, navigating, plan);
     if app.size_hold.holding(now) {
         ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(crate::region::HOLD_SECS));
     }
+    let drawn_px = app.size_hold.display_fit(now, ((target_rect.width() * ppp).round() as usize, (target_rect.height() * ppp).round() as usize));
     // At rest the whole frame renders at no less than the preview source level: the source is then
     // copied 1:1 (no resample in the pipeline, whose prefilter and bilinear pass soften detail near
     // the output's limit) and shrunk once, by the Lanczos display fit below.
@@ -603,11 +605,7 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
         // at rest the render is shrunk to exactly the size it is drawn at with a Lanczos filter on
         // the worker, so the window draws it texel for texel instead of shrinking it with 2-tap
         // sampling (the render is up to a 64 px step larger, or the preview level)
-        let job = if interacting {
-            job
-        } else {
-            job.with_display_fit((target_rect.width() * ppp).round() as usize, (target_rect.height() * ppp).round() as usize)
-        };
+        let job = if interacting { job } else { job.with_display_fit(drawn_px.0, drawn_px.1) };
         let job = job.with_overlay(overlay).with_proof(app.ui.soft_proof.then_some(app.ui.proof));
         let job = job.with_hidden_grading(app.ui.grading_hidden_for(id));
         app.renderer.request(Slot::Main, job, 100);
@@ -626,7 +624,7 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
     let hover_key = match app.hover_preview.clone() {
         Some(h) if !interacting => app.session.preview_job(id, sw.max(8), sh.max(8), !crop_tool, &h.settings).map(|job| {
             // (the same display fit as the After view, drawn texel for texel like it)
-            let job = job.with_display_fit((target_rect.width() * ppp).round() as usize, (target_rect.height() * ppp).round() as usize);
+            let job = job.with_display_fit(drawn_px.0, drawn_px.1);
             let key = job.key;
             app.renderer.request(Slot::Hover, job, 105);
             (key, h.label)
@@ -666,11 +664,7 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
         && let Some(job) = app.session.render_job(id, sw.max(8), sh.max(8), true, !crop_tool)
     {
         // (the same display fit as the After view, so both panes are the same texture size)
-        let job = if interacting {
-            job
-        } else {
-            job.with_display_fit((target_rect.width() * ppp).round() as usize, (target_rect.height() * ppp).round() as usize)
-        };
+        let job = if interacting { job } else { job.with_display_fit(drawn_px.0, drawn_px.1) };
         app.renderer.request(Slot::Before, job, 90);
     }
     // zoomed past what the whole-frame render holds: also render the part on screen, at no more

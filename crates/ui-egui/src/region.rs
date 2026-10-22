@@ -326,12 +326,15 @@ pub const HOLD_SECS: f64 = 0.25;
 /// Holds the loupe's render sizes while a gesture runs (a continuous pinch changes the zoom every
 /// frame; re-planning each time would be a stream of renders of every size in between). The view
 /// keeps being drawn from the renders it has, magnified by the GPU, and is re-planned once the
-/// gesture has been quiet for [`HOLD_SECS`].
+/// gesture has been quiet for [`HOLD_SECS`]. The display fit is held with the plan: at rest the
+/// whole frame is the preview shrunk to the size on screen, and a pinch must not grow that fit.
 #[derive(Clone, Debug, Default)]
 pub struct SizeHold {
     photo: Option<lightcraft_catalog::PhotoId>,
     plan: Option<LoupePlan>,
     until: f64,
+    /// Display-fit size in pixels from the last frame that was not holding a gesture.
+    display: Option<(usize, usize)>,
 }
 
 impl SizeHold {
@@ -339,7 +342,7 @@ impl SizeHold {
     /// one is running (`gesturing`) and for [`HOLD_SECS`] after. `now` is in seconds.
     pub fn apply(&mut self, photo: lightcraft_catalog::PhotoId, now: f64, gesturing: bool, fresh: LoupePlan) -> LoupePlan {
         if self.photo != Some(photo) {
-            *self = SizeHold { photo: Some(photo), plan: Some(fresh), until: f64::NEG_INFINITY };
+            *self = SizeHold { photo: Some(photo), plan: Some(fresh), until: f64::NEG_INFINITY, display: None };
             return fresh;
         }
         if gesturing {
@@ -357,6 +360,16 @@ impl SizeHold {
     /// Whether sizes are being held at `now` (the caller asks for a repaint when it ends).
     pub fn holding(&self, now: f64) -> bool {
         now < self.until
+    }
+
+    /// The display fit for this frame. While a gesture is held, the size from before it;
+    /// otherwise `current`, which is remembered for the next gesture. Call after [`Self::apply`].
+    pub fn display_fit(&mut self, now: f64, current: (usize, usize)) -> (usize, usize) {
+        if now < self.until {
+            return self.display.unwrap_or(current);
+        }
+        self.display = Some(current);
+        current
     }
 }
 
@@ -876,16 +889,20 @@ mod tests {
         let mut hold = SizeHold::default();
         let p = PhotoId(1);
         assert_eq!(hold.apply(p, 0.0, false, fit), fit);
+        assert_eq!(hold.display_fit(0.0, (762, 508)), (762, 508));
         // the pinch runs for a second: every frame would plan something else
         for k in 1..60 {
             assert_eq!(hold.apply(p, k as f64 / 60.0, true, zoomed), fit, "frame {k}");
+            assert_eq!(hold.display_fit(k as f64 / 60.0, (4000, 2666)), (762, 508), "frame {k}");
         }
         // it stopped at t = 59/60: still held for a moment (no flicker between two events)…
         assert!(hold.holding(1.1));
         assert_eq!(hold.apply(p, 1.1, false, zoomed), fit);
+        assert_eq!(hold.display_fit(1.1, (4000, 2666)), (762, 508));
         // …then the view is planned for where it ended
         assert!(!hold.holding(59.0 / 60.0 + HOLD_SECS + 0.01));
         assert_eq!(hold.apply(p, 1.3, false, zoomed), zoomed);
+        assert_eq!(hold.display_fit(1.3, (4000, 2666)), (4000, 2666));
         assert_eq!(hold.apply(p, 1.4, false, zoomed), zoomed);
     }
 
@@ -896,7 +913,9 @@ mod tests {
         let (fit, zoomed) = (plan(&auto(), sizes(1400.0, 1400.0, 6000)), plan(&auto(), sizes(24000.0, 1400.0, 6000)));
         let mut hold = SizeHold::default();
         hold.apply(PhotoId(1), 0.0, false, fit);
+        assert_eq!(hold.display_fit(0.0, (762, 508)), (762, 508));
         assert_eq!(hold.apply(PhotoId(2), 0.1, true, zoomed), zoomed);
+        assert_eq!(hold.display_fit(0.1, (4000, 2666)), (4000, 2666));
     }
 
     // Given side by side, a window is drawn in its pane only; given a wipe, on its side of the line
