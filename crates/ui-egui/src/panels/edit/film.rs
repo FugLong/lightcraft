@@ -25,7 +25,8 @@ pub(super) fn section(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId, d
                 }
             } else {
                 ui.add_space(4.0);
-                if wide_button(ui, "filmConvert", "Convert", true).clicked() {
+                let width = ui.available_width();
+                if crate::button::Button::new("Convert").primary().large().min_width(width).widget("button:filmConvert").show(ui).clicked() {
                     let result = app.run("film.setEnabled", json!({"enabled": true}));
                     show_result(app, ui, result);
                 }
@@ -315,24 +316,6 @@ fn base_color(base: [f64; 3]) -> Color32 {
         (y.clamp(0.0, 1.0) * 255.0).round() as u8
     };
     Color32::from_rgb(enc(base[0]), enc(base[1]), enc(base[2]))
-}
-
-fn wide_button(ui: &mut egui::Ui, id: &str, label: &str, accent: bool) -> egui::Response {
-    let label = crate::i18n::tr(label);
-    let t = Tokens::get(ui.ctx());
-    let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::click());
-    register(ui, format!("button:{id}"), r);
-    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, accent, label));
-    let fill = if accent {
-        if resp.hovered() { t.accent.gamma_multiply(0.85) } else { t.accent }
-    } else if resp.hovered() {
-        t.hover
-    } else {
-        t.button
-    };
-    ui.painter().rect(r, egui::CornerRadius::same(4), fill, Stroke::new(1.0, if accent { fill } else { t.button_border }), egui::StrokeKind::Inside);
-    ui.painter().text(r.center(), Align2::CENTER_CENTER, label, t.semibold(13.0), if accent { Color32::WHITE } else { t.text });
-    resp
 }
 
 /// Density readout depends on the film settings and how the scan is oriented, not on Light or Color.

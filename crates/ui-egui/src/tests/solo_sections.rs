@@ -102,6 +102,7 @@ fn negative_craft_stays_hidden_until_the_edit_menu_enables_it() {
     assert!(h.app.ui.section_open("film"));
     assert_eq!(crate::menubar::checked(&h.app, "section.film"), Some(true));
     assert!(widgets(&mut h).contains("\"section:film\""), "the section sits above Light once enabled");
+    assert!(widgets(&mut h).contains("\"button:filmConvert\""), "Convert is the shared primary button");
 
     exec(&mut h, "section.film", json!({"solo": true}));
     assert!(h.app.ui.negative_craft, "a header click folds the section and leaves Negative Craft on");
