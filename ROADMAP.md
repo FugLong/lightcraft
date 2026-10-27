@@ -2,7 +2,7 @@
 
 **Stage: alpha** · next: beta, ~14 points and ~340–600 h away
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-22 · **Change:** minor (checklist breadth 83.9% of 549 rows, current main plus Negative Craft) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-27 · **Change:** minor (checklist breadth 83.9% of 549 → 83.7% of 550 after merging current main with Negative Craft) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
 
 One-page summary of how close LightCraft is to Adobe Lightroom. Agents: read this, then pick work
 from [docs/gaps.md](docs/gaps.md). The full assessment, method and evidence are in
@@ -12,7 +12,7 @@ from [docs/gaps.md](docs/gaps.md). The full assessment, method and evidence are 
 
 | | Value | Kind |
 |---|---:|---|
-| **Feature breadth** (checklist) | **83.9%** of 549 rows (P0 98.3%, P1 95.0%, P2 58.2%) | measured: [parity-checklist.md](docs/parity-checklist.md) recount |
+| **Feature breadth** (checklist) | **83.7%** of 550 rows (P0 98.3%, P1 94.4%, P2 58.4%) | measured: [parity-checklist.md](docs/parity-checklist.md) recount |
 | **Feature breadth** (weighted by use) | **~77%** | estimated |
 | **Ready for real work** (full target) | **~61%** (56–66%) | estimated: weighted sum over the dimensions |
 | **Mainstream practitioner** | **~51%** (46–56%) | estimated |
@@ -114,6 +114,11 @@ Ranked toward beta; detail in [docs/roadmap.md](docs/roadmap.md), gaps in [docs/
 
 ## Progress log
 
+- 2026-10-22: Print page setup and PDF output gain the Japanese photo and postcard papers — L判
+  (89 × 127 mm), 2L判 (127 × 178), KG判 (102 × 152), はがき (100 × 148), 往復はがき (148 × 200),
+  六切 (203 × 254), 四切 (254 × 305) and 名刺 (55 × 91) — at their exact metric sizes. The Print dialog
+  and `print.set` take their customary names, and names are matched case-, space- and
+  punctuation-insensitively (`L判`, `l`, `L-size` are one paper).
 - 2026-10-17: Negative Craft cleanup: Skin, Foliage, and Sky removed. Headline numbers unchanged.
 - 2026-10-17: Negative Craft converts a colour negative or a black-and-white negative through the film gamma with highlight headroom
   (Convert, a gray axis, and Gray). A slide is already a positive and only has its contrast adjusted. Checklist breadth 83.4% of 539 → 83.6% of 546.
@@ -124,7 +129,7 @@ Ranked toward beta; detail in [docs/roadmap.md](docs/roadmap.md), gaps in [docs/
   RGGB and GBRG, as-shot WB from `WBG`); DiMAGE 7, 7Hi, A1, A2, A200 and Dynax / Maxxum 7D verified on
   CC0 files. 551 models verified, 201 preview-only; headline numbers unchanged.
 - 2026-10-14: 97 Canon CR2, Pentax and Ricoh models verified, one CC0 raw.pixls.us file each pinned and
-  checked against the camera JPEG (`crates/raw/tests/canon_pentax_corpus.rs`). 334 models verified, ~50% of
+  checked against the camera JPEG (`crates/raw/tests/it/canon_pentax_corpus.rs`). 334 models verified, ~50% of
   photographers on a verified body; headline numbers unchanged.
 - 2026-10-12: Mamiya MEF (ZD) decodes from sensor data and is imported; verified on a CC0 file. 241 models
   verified, 35 unsupported; headline numbers unchanged.
@@ -138,7 +143,7 @@ Ranked toward beta; detail in [docs/roadmap.md](docs/roadmap.md), gaps in [docs/
   decode. The EOS R6 Mark III gets its as-shot white balance (`ColorData` 66). 259 models verified; RAW
   decoding 77% → 83%; mainstream ~49% → ~51%, essentials ~64% → ~65%, full ~61%.
 - 2026-10-12: 117 Nikon and Fujifilm bodies verified, one CC0 raw.pixls.us file each pinned and checked
-  against the camera JPEG (`crates/raw/tests/body_corpus.rs`); the sweep found COOLPIX 5700 / 8400 / 8800
+  against the camera JPEG (`crates/raw/tests/it/body_corpus.rs`); the sweep found COOLPIX 5700 / 8400 / 8800
   decoding wrongly. 354 models verified, ~58% of photographers on a verified body; headline numbers unchanged.
 - 2026-10-11: Canon EOS R5 Mark II C-RAW decodes from sensor data (57% of its files opened as a
   preview): the CRX QP map's first-symbol literal and limited-length escape; four CC0 R5 Mark II files
@@ -189,7 +194,9 @@ Ranked toward beta; detail in [docs/roadmap.md](docs/roadmap.md), gaps in [docs/
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-27 | minor | Checklist recounted after merging current main with Negative Craft: feature breadth 83.9% of 549 → 83.7% of 550 (P0 98.3% of 203, P1 94.4% of 161, P2 58.4% of 185) |
 | 2026-10-22 | minor | Checklist recounted with current main and Negative Craft: feature breadth 83.6% of 546 → 83.9% of 549 (P0 98.3% of 203, P1 95.0% of 161, P2 58.2% of 184) |
+| 2026-10-22 | minor | Print: Japanese photo and postcard paper sizes (L判, 2L判, KG判, はがき, 往復はがき, 六切, 四切, 名刺) in the page setup, Print dialog and PDF output; headline numbers unchanged |
 | 2026-10-19 | minor | Indonesian interface (`id`): every plain and formats message, plus 69 command labels, locale, menu command and tests; What's New left in English; Localization ~55% → ~64% (mean of the 12 key languages), 8 of 12 present |
 | 2026-10-18 | minor | Negative Craft: checklist breadth 81.6% of 532 → 83.6% of 546 (P0 98.3%, P1 95.0%, P2 57.4%). Slides are contrast only |
 | 2026-10-12 | minor | Italian interface (`it`, #1192): 2,201 of 2,398 messages, locale, menu command and tests; headline numbers unchanged |
