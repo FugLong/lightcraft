@@ -136,7 +136,7 @@ fn wb_k(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) nw
 // Negative Craft (`lightcraft_pipeline::film::FilmKernel::apply`). P[1..] is `FilmKernel::words`:
 // base, gamma, presat, slope, power (film gamma on a negative, grade on a slide), offset, shoulder,
 // balance, shadow, mid, high, flags, capture, fog.g, white.g, fog.rgb, white.rgb, dye.rgb, aim.rgb,
-// chroma, axis.rgb.
+// chroma, axis.rgb, lift, pivot, anchor.
 @compute @workgroup_size(256)
 fn film_k(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) nw: vec3<u32>) {
     let i = lin_index(g, nw);
@@ -186,7 +186,11 @@ fn film_k(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) 
         let fog = vec3<f32>(pf(28u), pf(29u), pf(30u));
         let white = vec3<f32>(pf(31u), pf(32u), pf(33u));
         let axis = max(vec3<f32>(pf(41u), pf(42u), pf(43u)), vec3<f32>(0.05));
-        let straight = max(d - fog, vec3<f32>(0.0)) / axis;
+        var straight = max(d - fog, vec3<f32>(0.0)) / axis;
+        let lift = max(pf(44u), 0.0);
+        if (lift > 1e-4) {
+            straight = max(straight - vec3<f32>(lift), vec3<f32>(0.0));
+        }
         // pf(9) is the film gamma on a negative (FILM_GAMMA / grade). The brightest channel
         // is the curve white. A near-neutral bright end is gained so each channel's white
         // density prints at 1, fading in toward that end. Equal whites leave the gain at 1.
@@ -209,6 +213,14 @@ fn film_k(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) 
         if (abs(chroma - 1.0) > 1e-4) {
             let y = (scene.x + scene.y + scene.z) / 3.0;
             scene = max(vec3<f32>(y) + (scene - vec3<f32>(y)) * chroma, vec3<f32>(0.0));
+        }
+        // Hold the middle: `anchor` is this pivot's scene light at the grade exposure was solved for.
+        let pivot = pf(45u);
+        let anchor = pf(46u);
+        if (pivot > 1e-4 && anchor > 1e-5) {
+            let now_e = min(pivot / gam, 8.0);
+            let now = max((pow(10.0, now_e) - 1.0) / scale, 1e-5);
+            scene = scene * clamp(anchor / now, 0.02, 64.0);
         }
     } else {
         scene = pow(n, gamma);

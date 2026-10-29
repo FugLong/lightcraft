@@ -6,7 +6,7 @@ the rest of the pipeline. Auto tone, Auto black-and-white mix, white balance, an
 that positive, not the negative. On a raw file with its own colour matrix the density is measured in
 white-balanced camera RGB; the matrix only carries the positive back to Rec.2020. A JPEG is already
 in the working space, so the same curve is only as true as that file. The GPU kernel `film_k`
-(`crates/gpu/src/wgsl/map.wgsl`) is the same formula, including the 43 words from `FilmKernel::words`.
+(`crates/gpu/src/wgsl/map.wgsl`) is the same formula, including the 46 words from `FilmKernel::words`.
 Settings and commands are `film.*`. A slide (`colorPos`, `bwPos`) is still
 accepted by `film.setStock` so an old frame opens; it is not on the panel, because a slide is
 already a positive.
@@ -64,7 +64,8 @@ Clear film is the per-channel base, from the rebate (or **Border**). A strong or
 preferred. A pale or near-white rebate, such as old film or a raw whose camera white balance has
 already lifted the mask, is the base when no orange is there. A clipped white lamp is never the
 base. A click darker than the scan's own bright film is refused as too dark, not as blown out.
-Among bright orange film, Auto uses the strongest orange, low in both blue and green. Density
+Among bright orange film, Auto uses the typical color of that area. A hot pixel does not set it.
+A distinctly paler population, such as where the rebate washes into the lamp, is left out. Density
 is `D = -log10(transmission / base)`, which removes the constant orange mask and nothing else.
 Scan gamma is removed first. Linear leaves the file alone. Gamma 1.8 and 2.2 raise each channel
 to that power, and the print does the same, so a measured rebate is black. Frame detection and
@@ -75,9 +76,17 @@ A colour negative's straight line is `D ≈ 0.60 · log10(exposure)`. The positi
 `(10^(D / γ) − 1)` divided by the same expression at a reference density. Density above that
 reference stays above 1. It is not clipped first.
 Contrast changes γ (`0.60 / grade`). Exposure is the scale that puts the middle of the picture on
-middle grey, 0.18, the same grey the tone map is built around. Convert also sets contrast so the
-bright end of that picture is 1: exposure and the white point are one scale, and contrast is the
-slope, so both have to be solved or the print can only be moved up and down. A negative that is
+middle grey, 0.18, the same grey the tone map is built around. Moving Contrast keeps that middle
+where it is and changes the slope around it: the shadows and the bright end move, the midtone does
+not. A thin subject that is clearer than
+the rebate is not one black: the black point moves to that clear film, so grain around it stays a
+shadow instead of dots. A spike of unexposed film does not set the exposure either; the middle of
+the exposed picture does. A negative that is one thin tone still uses that tone. Convert sets contrast so the
+body of the picture, the 90th percentile, prints bright, and leaves a small bright tail free to
+pass 1. When that body is one tone and only a small patch is brighter, the patch is the bright end
+instead, so it is not dropped to grey. Exposure and contrast are solved together. A picture whose shadows sit far above clear
+film has that empty density lifted, with a toe left under the darkest grain, so the frame is not
+printed gray. A negative that is
 still too steep at the softest grade keeps that grade, and a shoulder rolls the bright end back
 to 1 without moving the middle. Margin, a look, and Match roll keep the contrast and solve
 exposure again. A bright end that is close to neutral is gained
@@ -107,23 +116,18 @@ already set to `colorPos` or `bwPos` stays a positive and only applies contrast.
 Temperature, tint, and the three band balances are trims on the print, after exposure, so contrast
 does not multiply them. At the end of a slider they move about 0.40 density.
 
-The frame is a quad on the rebate that touches the border: orange for a color negative, bright
-for black-and-white, dark for a slide. A thin negative is orange inside the picture too, so that
-flood can swallow the scan. Convert then uses the sprocket and clear-film gate instead, and stores
-whichever quad it found. **Auto** under **Crop** uses it, and when that quad is the whole scan it finds
-the picture inside the sprockets instead. When no rebate is found the previous
-quad is kept and **Convert** and **Auto** say so. A roll shares the mask color and the gray axis. Density is
-already above each frame's own rebate, so the axis is copied rather than scaled. Each frame's
-exposure is solved again with that axis, so the shared gray does not shift the midtone. A frame
-whose rebate is more than half a stop from the roll is reported and still converted.
+The frame is the picture inside the rebate. A black holder around the film is not the border: the search crosses it and stops where the flat blank film ends, even when the picture is nearly as bright as that film. Orange for a color negative, bright for black-and-white, dark for a slide. The rebate is that flat band, so a thinner washed rim where the film meets the lamp is not the base, and neither is a bright patch inside the picture. When the band has no inner edge, Convert uses the sprocket and clear-film gate instead, and stores whichever quad it found. **Auto** under **Crop** uses it, and when that quad is the whole scan it finds the picture inside the sprockets instead. When no rebate is found the previous quad is kept and **Convert** and **Auto** say so. A roll shares the mask color and the gray axis. Density is already above each frame's own rebate, so the axis is copied rather than scaled. Each frame's exposure is solved again with that axis, so the shared gray does not shift the midtone. A frame whose rebate is more than half a stop from the roll is reported and still converted.
 
 ## Scanning
 
 The rebate has to be in the file. A few millimetres of blank film at the edge is the measurement.
 Lock the camera's white balance for the roll (Daylight, or one custom balance) so the rebate stays
 the same orange on every frame. Expose so that border is bright and not clipped: a pure-white
-rebate has no mask color left, and **Border** refuses it. A raw holds that measurement more faithfully
-than a JPEG of the same negative.
+rebate has no mask color left, and **Border** refuses it. **Border** measures the rebate as a whole.
+The pixel under the cursor is not the base: a speck of grain, the black holder, and a click a
+little way into the picture all return the same color, and the exposure stays put. A clipped rebate,
+or a scan with no blank film, still has no mask color to recover. A raw holds that measurement
+more faithfully than a JPEG of the same negative.
 
 ## Limits
 
@@ -135,7 +139,8 @@ than a JPEG of the same negative.
   applied to whatever the file stored.
 - A frame with no rebate keeps the previous border. **Match roll** shares the mask color ratio and
   each frame's own rebate level, so it does not supply a mask to a frame that has none.
-- A clipped rebate is refused as a base. The mask color is gone from that file.
+- A clipped rebate is refused as a base. The mask color is gone from that file. Noise on a rebate
+  that is actually in the scan is averaged out; noise cannot invent a mask the file does not hold.
 - No manufacturer's stock profile and no scanner table. The dye numbers are a typical residual of
   a wide filter against a narrow one. The formula is the transmission model, Hanson's inverse, the
   film characteristic curve, and the gray axis. No plugin binary is used here.

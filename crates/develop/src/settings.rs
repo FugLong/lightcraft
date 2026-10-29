@@ -1377,8 +1377,8 @@ impl FilmFrame {
 
 /// Negative Craft settings. Zero on temperature, tint, and the band balances means the mask
 /// has been removed and no cast has been added. Exposure and blacks place the print. Contrast
-/// (`grade`) changes the film gamma on a negative and is a power on a slide. A shoulder, when
-/// set, rolls off highlights. They can sit at identity.
+/// (`grade`) changes the film gamma on a negative and holds the middle still; on a slide it is a
+/// power. A shoulder, when set, rolls off highlights. They can sit at identity.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Film {
@@ -1406,10 +1406,17 @@ pub struct Film {
     pub gamma_b: f64,
     pub exposure: f64,
     pub grade: f64,
+    /// Straightened density the contrast slider holds still. Zero disables the hold.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub pivot: f64,
+    /// Scene light of [`Self::pivot`] at the grade exposure was solved for, before exposure.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub anchor: f64,
     pub black: f64,
     pub shoulder: f64,
-    /// Low end of the print, in density above the mask. Zero keeps the film border black.
-    /// Kept as the shared black when [`Self::white_r`] is still zero.
+    /// Density lifted off the shadows once Auto has set a white, so a picture that never
+    /// reaches clear film can print black. Zero keeps the film border as the only black.
+    /// While the white is still unset this is the shared black point.
     pub d_lo: f64,
     /// Density of the bright end. The curve uses the brightest channel of [`Self::white`].
     pub d_hi: f64,
@@ -1470,6 +1477,8 @@ impl Default for Film {
             gamma_b: 1.0,
             exposure: 0.0,
             grade: 1.0,
+            pivot: 0.0,
+            anchor: 0.0,
             black: 0.0,
             shoulder: 0.0,
             d_lo: 0.0,

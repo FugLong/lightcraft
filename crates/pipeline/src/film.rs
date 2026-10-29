@@ -9,9 +9,12 @@
 //! A color negative's straight line is `D ≈ γ log10(exposure)` with γ near [`FILM_GAMMA`]. The
 //! positive is that exposure, `10^(D/γ) − 1`, normalised so a chosen density is scene light 1.
 //! Convert places the middle of the picture on the pipeline's middle grey (0.18) and sets contrast
-//! so the bright end of that picture is 1. Those are the two degrees of freedom: exposure is a
-//! scale, contrast is the slope. A negative too steep for the softest grade keeps that grade, and
-//! a shoulder rolls the bright end back to 1. Contrast is not a power on the normalised density.
+//! so the body of that picture, not a bright speck, fills the print. Exposure is the scale.
+//! Contrast is the slope, and it pivots on that middle: moving it does not slide the whole frame
+//! brighter or darker. A picture that never reaches clear film has the empty density under it
+//! lifted, so the shadows can reach black. A negative too steep for the softest grade keeps that
+//! grade, and a shoulder rolls the bright end back to 1. Contrast is not a power on the
+//! normalised density.
 //!
 //! The orange mask cancels dye side-absorption for colour paper, not for a camera. What a wide
 //! filter still sees is removed with Hanson's integral-to-analytical inverse ([`printing_density`];
@@ -33,6 +36,14 @@ const EPS: f32 = 1e-6;
 const LN10: f32 = std::f32::consts::LN_10;
 /// Straight-line gamma of a colour negative (density per decade of exposure).
 pub const FILM_GAMMA: f64 = 0.60;
+/// Print luminance the 90th percentile of the picture should reach. The extreme bright end may
+/// pass 1; the shoulder brings that end back onto the paper.
+const BODY_PRINT: f64 = 0.82;
+/// Density left under the picture's dark end when that end sits far above clear film.
+const SHADOW_TOE: f64 = 0.08;
+/// The dark end has to be at least this fraction of the bright end before the empty density
+/// under the picture is lifted. A frame that already reaches toward clear film is left alone.
+const SHADOW_GAP: f64 = 0.45;
 /// Scene-linear ceiling. Density above the frame's white stays, up to this, for the tone curve.
 const HEADROOM: f32 = 64.0;
 
@@ -60,6 +71,12 @@ pub struct FilmKernel {
     pub negative: bool,
     pub mono: bool,
     pub capture: f32,
+    /// Straightened density removed under the shadows. Zero keeps clear film as the only black.
+    pub lift: f32,
+    /// Straightened density the contrast slider holds still, and its scene light at the grade
+    /// exposure was solved for. Zero skips the hold, so a slide and an old print are unchanged.
+    pub pivot: f32,
+    pub anchor: f32,
 }
 
 impl FilmKernel {
@@ -92,12 +109,17 @@ impl FilmKernel {
             negative: f.stock.negative(),
             mono: f.stock.mono(),
             capture: f.capture.gamma() as f32,
+            // `d_lo` is the shared black when Auto has not set a white. Once it has, `d_lo` is
+            // the density lifted off the shadows.
+            lift: if f.shared_endpoints() || !f.d_lo.is_finite() { 0.0 } else { f.d_lo.max(0.0) as f32 },
+            pivot: if f.pivot.is_finite() { f.pivot.max(0.0) as f32 } else { 0.0 },
+            anchor: if f.anchor.is_finite() { f.anchor.max(0.0) as f32 } else { 0.0 },
         }
     }
 
     /// `P[1..]` of `film_k` (`P[0]` is the pixel count, added by the dispatcher).
     pub fn words(&self) -> Vec<u32> {
-        let mut w = Vec::with_capacity(43);
+        let mut w = Vec::with_capacity(46);
         let push = |w: &mut Vec<u32>, v: f32| w.push(v.to_bits());
         for v in self.base {
             push(&mut w, v);
@@ -151,6 +173,9 @@ impl FilmKernel {
         for v in self.axis {
             push(&mut w, v);
         }
+        push(&mut w, self.lift);
+        push(&mut w, self.pivot);
+        push(&mut w, self.anchor);
         w
     }
 
@@ -190,6 +215,9 @@ impl FilmKernel {
             for i in 0..3 {
                 let axis = self.axis[i].max(0.05);
                 straight[i] = ((d[i] - self.fog[i]).max(0.0)) / axis;
+                if self.lift > 1e-4 {
+                    straight[i] = (straight[i] - self.lift).max(0.0);
+                }
             }
             let straight_y = 0.2627 * straight[0] + 0.6780 * straight[1] + 0.0593 * straight[2];
             let t = if self.mono { 0.0 } else { smooth(shared * 0.62, shared * 0.92, straight_y) };
@@ -210,6 +238,15 @@ impl FilmKernel {
                 let y = (scene[0] + scene[1] + scene[2]) / 3.0;
                 for c in &mut scene {
                     *c = (y + (*c - y) * self.chroma).max(0.0);
+                }
+            }
+            // Hold the middle. Exposure was solved at one grade; another grade must not slide
+            // that density off middle grey. The same factor on every channel leaves the hue.
+            if self.pivot > 1e-4 && self.anchor > 1e-5 {
+                let now = light_from_density(self.pivot, shared, film_gamma).max(1e-5);
+                let hold = (self.anchor / now).clamp(0.02, 64.0);
+                for c in &mut scene {
+                    *c *= hold;
                 }
             }
         } else {
@@ -435,30 +472,41 @@ pub fn density_at(img: &Rgb32f, x: f64, y: f64, film: &Film) -> [f64; 3] {
     density_rgb(p.map(|v| v as f32), &film.base(), &film.gamma(), !film.stock.mono(), film.scan)
 }
 
-/// Mean of a 5×5 neighborhood. `x` and `y` are normalized to the oriented image.
+/// Median of a 5×5 neighborhood. `x` and `y` are normalized to the oriented image.
+///
+/// Gray and neutral clicks want this local tone. A border click uses [`sample_border`].
 pub fn sample(img: &Rgb32f, x: f64, y: f64) -> Option<[f64; 3]> {
     if img.width == 0 || img.height == 0 {
         return None;
     }
     let cx = (x.clamp(0.0, 1.0) * img.width as f64) as isize;
     let cy = (y.clamp(0.0, 1.0) * img.height as f64) as isize;
-    let mut acc = [0.0f64; 3];
-    let mut n = 0.0f64;
+    let mut cols = [[0.0f64; 25]; 3];
+    let mut n = 0usize;
     for dy in -2..=2 {
         for dx in -2..=2 {
-            let c = img.get_clamped(cx + dx, cy + dy);
-            for i in 0..3 {
-                if let Some(slot) = acc.get_mut(i) {
-                    *slot += c[i] as f64;
+            let pixel = img.get_clamped(cx + dx, cy + dy);
+            for (channel, sample) in cols.iter_mut().zip(pixel) {
+                if let Some(slot) = channel.get_mut(n) {
+                    *slot = sample as f64;
                 }
             }
-            n += 1.0;
+            n = n.saturating_add(1);
         }
     }
-    if n <= 0.0 {
-        return None;
+    Some(cols.map(|mut col| percentile_f64(&mut col, 0.50).unwrap_or(0.0)))
+}
+
+/// Blank film of this scan. The click only matters when no rebate is there.
+///
+/// The flat band against the holder is the color. The bright ring is the fallback. A grain speck,
+/// the holder, and a click a few pixels into the picture all return that one color.
+pub fn sample_border(img: &Rgb32f, x: f64, y: f64) -> Option<[f64; 3]> {
+    if let Some(color) = plateau_border(img).color {
+        return Some(color);
     }
-    Some(acc.map(|v| v / n))
+    // The bright ring, on the area average. A click does not flood the full scan.
+    rebate_hit(&preview(img)).and_then(|hit| hit.color).or_else(|| sample(img, x, y))
 }
 
 /// Per-channel contrast that makes the picked neutrals neutral, green held at `green`.
@@ -523,6 +571,9 @@ pub struct FrameStats {
     pub grade: f64,
     /// Paper shoulder written by Convert. Zero when the bright end already prints at 1.
     pub shoulder: f64,
+    /// Straightened density the contrast slider holds, and its scene light at [`Self::grade`].
+    pub pivot: f64,
+    pub anchor: f64,
 }
 
 #[derive(Clone, Debug)]
@@ -559,6 +610,8 @@ pub fn analyze_image(img: &Rgb32f, film: &Film) -> Analysis {
     film.mid_b = stats.mid_b;
     film.grade = stats.grade;
     film.exposure = stats.exposure;
+    film.pivot = stats.pivot;
+    film.anchor = stats.anchor;
     if film.stock.negative() {
         film.shoulder = stats.shoulder;
     }
@@ -586,6 +639,8 @@ pub fn analyze_picture(img: &Rgb32f, film: &Film) -> Analysis {
     film.mid_b = stats.mid_b;
     film.grade = stats.grade;
     film.exposure = stats.exposure;
+    film.pivot = stats.pivot;
+    film.anchor = stats.anchor;
     if film.stock.negative() {
         film.shoulder = stats.shoulder;
     }
@@ -710,12 +765,713 @@ fn rebate_mask(img: &Rgb32f, stock: FilmStock) -> Vec<bool> {
     rebate
 }
 
+fn is_holder(p: [f32; 3]) -> bool {
+    let y = luminance_2020(p);
+    if !(0.02..0.42).contains(&y) {
+        return false;
+    }
+    let max = p[0].max(p[1]).max(p[2]).max(1e-6);
+    let min = p[0].min(p[1]).min(p[2]);
+    (max - min) / max < 0.22
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Strip {
+    Outside,
+    Rebate,
+    Picture,
+}
+
+fn strip_kind(p: [f32; 3], stock: FilmStock) -> Strip {
+    let rebate = match stock {
+        FilmStock::ColorNeg => is_mask_orange(p) || is_pale_rebate(p),
+        FilmStock::BwNeg => luminance_2020(p) > 0.4 && !is_light_table(p),
+        FilmStock::ColorPos | FilmStock::BwPos => false,
+    };
+    if rebate {
+        Strip::Rebate
+    } else if is_holder(p) || is_light_table(p) || luminance_2020(p) < 0.06 {
+        Strip::Outside
+    } else {
+        Strip::Picture
+    }
+}
+
+/// Median color of the middle of one row or column. The ends of a picture row are still
+/// rebate, and the middle is the picture, so the median is not the border.
+fn line_median(img: &Rgb32f, horizontal: bool, index: usize) -> Option<[f32; 3]> {
+    let (w, h) = (img.width, img.height);
+    let len = if horizontal { w } else { h };
+    if len < 8 {
+        return None;
+    }
+    let start = len / 8;
+    let end = len.saturating_sub(start).max(start.saturating_add(1));
+    let mut px = Vec::with_capacity(end.saturating_sub(start));
+    for t in start..end {
+        let (x, y) = if horizontal { (t, index) } else { (index, t) };
+        if let Some(p) = img.data.get(y.saturating_mul(w).saturating_add(x)) {
+            px.push(*p);
+        }
+    }
+    if px.len() < 4 {
+        return None;
+    }
+    Some(median_color(&px).map(|v| v as f32))
+}
+
+/// How many strips of holder and rebate sit outside the picture. `from_end` walks the far edge.
+fn edge_inset(classes: &[Strip], from_end: bool) -> Option<usize> {
+    let n = classes.len();
+    let limit = (n.saturating_mul(45) / 100).max(2).min(n);
+    let mut rebate = 0usize;
+    for step in 0..limit {
+        let i = if from_end { n - 1 - step } else { step };
+        match classes.get(i).copied().unwrap_or(Strip::Picture) {
+            Strip::Outside => {}
+            Strip::Rebate => rebate += 1,
+            Strip::Picture => {
+                if rebate >= 1 {
+                    return Some(step);
+                }
+                return None;
+            }
+        }
+    }
+    None
+}
+
+/// Holder, lamp, or crushed black. Orange film is not this, so the flood stops at the rebate.
+fn is_outside_margin(p: [f32; 3]) -> bool {
+    if orange_family(p) {
+        return false;
+    }
+    if is_light_table(p) || is_clipped_lamp(p) {
+        return true;
+    }
+    let y = luminance_2020(p);
+    if !(y.is_finite() && y < 0.50) {
+        return false;
+    }
+    if y < 0.07 {
+        return true;
+    }
+    let max = p[0].max(p[1]).max(p[2]).max(1e-6);
+    let min = p[0].min(p[1]).min(p[2]);
+    (max - min) / max < 0.35
+}
+
+fn orange_family(p: [f32; 3]) -> bool {
+    is_mask_orange(p) || is_clear_film(p) || is_pale_rebate(p)
+}
+
+/// Bright orange is blank film. The same hue darker than that is the picture.
+fn is_bright_rebate(p: [f32; 3], level: f32) -> bool {
+    if !orange_family(p) {
+        return false;
+    }
+    let y = luminance_2020(p);
+    y.is_finite() && y >= level * 0.80 && y <= level * 1.20
+}
+
+/// Dark plastic and the lamp, grown from the image edge. A dense patch inside the rebate is not
+/// connected, so it stays part of the picture.
+fn flood_margin(img: &Rgb32f) -> Vec<bool> {
+    let (w, h) = (img.width, img.height);
+    let n = w.saturating_mul(h);
+    let mut mask = vec![false; n];
+    if n == 0 || img.data.len() < n {
+        return mask;
+    }
+    let mut queue = std::collections::VecDeque::new();
+    let consider = |x: usize, y: usize, mask: &mut [bool], queue: &mut std::collections::VecDeque<usize>| {
+        let i = y.saturating_mul(w).saturating_add(x);
+        if mask.get(i).copied().unwrap_or(true) {
+            return;
+        }
+        if img.data.get(i).is_some_and(|p| is_outside_margin(*p))
+            && let Some(slot) = mask.get_mut(i)
+        {
+            *slot = true;
+            queue.push_back(i);
+        }
+    };
+    for x in 0..w {
+        consider(x, 0, &mut mask, &mut queue);
+        if h > 1 {
+            consider(x, h - 1, &mut mask, &mut queue);
+        }
+    }
+    for y in 1..h.saturating_sub(1) {
+        consider(0, y, &mut mask, &mut queue);
+        if w > 1 {
+            consider(w - 1, y, &mut mask, &mut queue);
+        }
+    }
+    while let Some(i) = queue.pop_front() {
+        let x = i % w;
+        let y = i / w;
+        let next =
+            [(x.wrapping_sub(1), y, x > 0), (x.saturating_add(1), y, x + 1 < w), (x, y.wrapping_sub(1), y > 0), (x, y.saturating_add(1), y + 1 < h)];
+        for (nx, ny, ok) in next {
+            if !ok {
+                continue;
+            }
+            consider(nx, ny, &mut mask, &mut queue);
+        }
+    }
+    mask
+}
+
+/// Luminance of the blank film. The 90th percentile sits in the rebate when the picture is the
+/// darker orange, and steps down when that percentile landed on a thin brighter rim.
+fn luma_mode(ys: &[f64]) -> Option<f64> {
+    if ys.len() < 24 {
+        return None;
+    }
+    let mut sorted = ys.to_vec();
+    let hi = percentile_f64(&mut sorted, 0.90)?;
+    if !(hi.is_finite() && hi > 0.05) {
+        return None;
+    }
+    let mut upper = 0u32;
+    let mut lower = 0u32;
+    let mut lower_sum = 0.0f64;
+    for y in ys {
+        if !y.is_finite() {
+            continue;
+        }
+        if *y >= hi * 0.90 && *y <= hi * 1.15 {
+            upper = upper.saturating_add(1);
+        } else if *y >= hi * 0.62 && *y < hi * 0.90 {
+            lower = lower.saturating_add(1);
+            lower_sum += *y;
+        }
+    }
+    if lower > upper && lower >= 8 { Some(lower_sum / f64::from(lower)) } else { Some(hi) }
+}
+
+/// Median color of the orange pile. Grain and a washed rim sit off the pile and drop out.
+fn mode_color(samples: &[[f32; 3]]) -> Option<[f64; 3]> {
+    let ys: Vec<f64> = samples.iter().copied().map(|p| luminance_2020(p) as f64).filter(|y| y.is_finite()).collect();
+    let mode = luma_mode(&ys)?;
+    let band: Vec<[f32; 3]> = samples
+        .iter()
+        .copied()
+        .filter(|p| {
+            let y = luminance_2020(*p) as f64;
+            y >= mode * 0.88 && y <= mode * 1.12
+        })
+        .collect();
+    let chosen = if band.len() >= 8 { &band } else { samples };
+    (chosen.len() >= 8).then(|| median_color(&stronger_orange(chosen)))
+}
+
+fn rebate_level(img: &Rgb32f, margin: &[bool]) -> Option<f32> {
+    let mut ys = Vec::new();
+    for (i, p) in img.data.iter().enumerate() {
+        if margin.get(i).copied().unwrap_or(false) || !orange_family(*p) {
+            continue;
+        }
+        let y = luminance_2020(*p);
+        if y.is_finite() {
+            ys.push(y as f64);
+        }
+    }
+    let level = luma_mode(&ys)?;
+    (level > 0.05).then_some(level as f32)
+}
+
+fn line_kind(img: &Rgb32f, margin: &[bool], level: f32, horizontal: bool, index: usize) -> Strip {
+    let (w, h) = (img.width, img.height);
+    let len = if horizontal { w } else { h };
+    let mut kept = Vec::new();
+    for t in 0..len {
+        let (x, y) = if horizontal { (t, index) } else { (index, t) };
+        let i = y.saturating_mul(w).saturating_add(x);
+        if margin.get(i).copied().unwrap_or(false) {
+            continue;
+        }
+        if let Some(p) = img.data.get(i) {
+            kept.push(*p);
+        }
+    }
+    // A holder row is almost all plastic. A thin negative in that holder is the rest.
+    if kept.len() < 4 || kept.len().saturating_mul(15) < len {
+        return Strip::Outside;
+    }
+    let med = median_color(&kept).map(|v| v as f32);
+    if is_bright_rebate(med, level) {
+        return Strip::Rebate;
+    }
+    // A washed rim is orange and brighter than the film. It is not the picture: the walk has to
+    // cross it to reach the rebate. Darker orange is the picture.
+    if orange_family(med) && luminance_2020(med) > level * 1.20 { Strip::Outside } else { Strip::Picture }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct EdgeWalk {
+    inset: usize,
+    rebate: bool,
+}
+
+fn walk_edge(classes: &[Strip], from_end: bool) -> Option<EdgeWalk> {
+    let n = classes.len();
+    let limit = (n.saturating_mul(72) / 100).max(2).min(n);
+    let mut rebate = 0usize;
+    let mut outside = 0usize;
+    for step in 0..limit {
+        let i = if from_end { n - 1 - step } else { step };
+        match classes.get(i).copied().unwrap_or(Strip::Picture) {
+            Strip::Outside => outside += 1,
+            Strip::Rebate => rebate += 1,
+            Strip::Picture => {
+                if step > 0 && (rebate >= 1 || outside >= 2) {
+                    return Some(EdgeWalk { inset: step, rebate: rebate >= 1 });
+                }
+                return None;
+            }
+        }
+    }
+    None
+}
+
+struct RebateHit {
+    frame: FilmFrame,
+    /// Stored scan color of the rebate. The same value for every border click.
+    color: Option<[f64; 3]>,
+}
+
+fn frame_from_edges(
+    top: Option<EdgeWalk>,
+    bottom: Option<EdgeWalk>,
+    left: Option<EdgeWalk>,
+    right: Option<EdgeWalk>,
+    w: usize,
+    h: usize,
+) -> Option<FilmFrame> {
+    let edges = [top, bottom, left, right];
+    let found = edges.iter().filter(|e| e.is_some()).count();
+    let rebate_edges = edges.iter().filter(|e| e.is_some_and(|e| e.rebate)).count();
+    if found < 3 || rebate_edges < 2 || w == 0 || h == 0 {
+        return None;
+    }
+    let inset = |e: Option<EdgeWalk>| e.map(|e| e.inset).unwrap_or(0);
+    let top = inset(top);
+    let left = inset(left);
+    let bottom = h.saturating_sub(inset(bottom));
+    let right = w.saturating_sub(inset(right));
+    if bottom <= top.saturating_add(4) || right <= left.saturating_add(4) {
+        return None;
+    }
+    let area = (right - left) as f64 / w as f64 * ((bottom - top) as f64 / h as f64);
+    if !(0.04..0.97).contains(&area) {
+        return None;
+    }
+    Some(FilmFrame {
+        corners: [
+            [left as f64 / w as f64, top as f64 / h as f64],
+            [right as f64 / w as f64, top as f64 / h as f64],
+            [right as f64 / w as f64, bottom as f64 / h as f64],
+            [left as f64 / w as f64, bottom as f64 / h as f64],
+        ],
+    })
+}
+
+/// The picture inside the bright rebate, and that rebate's color. The holder is not part of either.
+fn rebate_hit(img: &Rgb32f) -> Option<RebateHit> {
+    if img.width < 16 || img.height < 16 || img.data.len() < img.width.saturating_mul(img.height) {
+        return None;
+    }
+    let margin = flood_margin(img);
+    let level = rebate_level(img, &margin)?;
+    let (w, h) = (img.width, img.height);
+    let mut rows = Vec::with_capacity(h);
+    for y in 0..h {
+        rows.push(line_kind(img, &margin, level, true, y));
+    }
+    let mut cols = Vec::with_capacity(w);
+    for x in 0..w {
+        cols.push(line_kind(img, &margin, level, false, x));
+    }
+    let frame = frame_from_edges(walk_edge(&rows, false), walk_edge(&rows, true), walk_edge(&cols, false), walk_edge(&cols, true), w, h)?;
+    let mut samples = Vec::new();
+    for y in 0..h {
+        for x in 0..w {
+            let i = y.saturating_mul(w).saturating_add(x);
+            if margin.get(i).copied().unwrap_or(false) {
+                continue;
+            }
+            let Some(p) = img.data.get(i) else { continue };
+            if !is_bright_rebate(*p, level) {
+                continue;
+            }
+            let nx = (x as f64 + 0.5) / w as f64;
+            let ny = (y as f64 + 0.5) / h as f64;
+            if !inside_frame(&frame, nx, ny) {
+                samples.push(*p);
+            }
+        }
+    }
+    Some(RebateHit { frame, color: mode_color(&samples) })
+}
+
+/// The picture quad inside a dark holder and the rebate. `None` when an edge has no rebate.
+fn rebate_insets(img: &Rgb32f, stock: FilmStock) -> Option<FilmFrame> {
+    if !matches!(stock, FilmStock::ColorNeg | FilmStock::BwNeg) || img.width < 16 || img.height < 16 {
+        return None;
+    }
+    let (w, h) = (img.width, img.height);
+    let mut rows = Vec::with_capacity(h);
+    for y in 0..h {
+        let kind = line_median(img, true, y).map(|p| strip_kind(p, stock)).unwrap_or(Strip::Picture);
+        rows.push(kind);
+    }
+    let mut cols = Vec::with_capacity(w);
+    for x in 0..w {
+        let kind = line_median(img, false, x).map(|p| strip_kind(p, stock)).unwrap_or(Strip::Picture);
+        cols.push(kind);
+    }
+    let top = edge_inset(&rows, false)?;
+    let bottom_border = edge_inset(&rows, true)?;
+    let left = edge_inset(&cols, false)?;
+    let right_border = edge_inset(&cols, true)?;
+    let bottom = h.saturating_sub(bottom_border);
+    let right = w.saturating_sub(right_border);
+    if bottom <= top.saturating_add(4) || right <= left.saturating_add(4) {
+        return None;
+    }
+    let area = (right - left) as f64 / w as f64 * ((bottom - top) as f64 / h as f64);
+    if !(0.2..0.96).contains(&area) {
+        return None;
+    }
+    Some(FilmFrame {
+        corners: [
+            [left as f64 / w as f64, top as f64 / h as f64],
+            [right as f64 / w as f64, top as f64 / h as f64],
+            [right as f64 / w as f64, bottom as f64 / h as f64],
+            [left as f64 / w as f64, bottom as f64 / h as f64],
+        ],
+    })
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Side {
+    Top,
+    Bottom,
+    Left,
+    Right,
+}
+
+struct Plateau {
+    frame: Option<FilmFrame>,
+    /// Stored scan color of the flat rebate. The same value for every border click.
+    color: Option<[f64; 3]>,
+}
+
+struct Band {
+    /// Pixels from the outer edge to the first picture pixel.
+    inset: usize,
+    pixels: Vec<[f32; 3]>,
+}
+
+/// The flat blank film just inside the holder or the lamp.
+///
+/// A bright sky can match the rebate's orange, so a brightness test never sees a picture. The
+/// rebate is the run that starts at the holder and stays one color, and it ends where that color
+/// changes. The click is not an input.
+fn plateau_border(img: &Rgb32f) -> Plateau {
+    let none = Plateau { frame: None, color: None };
+    let (w, h) = (img.width, img.height);
+    if w < 16 || h < 16 || img.data.len() < w.saturating_mul(h) {
+        return none;
+    }
+    let mut samples = Vec::new();
+    let mut top = None;
+    let mut bottom = None;
+    let mut left = None;
+    let mut right = None;
+    for side in [Side::Top, Side::Bottom, Side::Left, Side::Right] {
+        let n = match side {
+            Side::Top | Side::Bottom => w,
+            Side::Left | Side::Right => h,
+        };
+        let start = n / 8;
+        let end = n.saturating_sub(start);
+        if end <= start {
+            continue;
+        }
+        let step = ((end - start) / 28).max(1);
+        let span = match side {
+            Side::Top | Side::Bottom => h,
+            Side::Left | Side::Right => w,
+        };
+        let mut insets = Vec::new();
+        let mut side_samples = Vec::new();
+        let mut tried = 0usize;
+        for t in (start..end).step_by(step) {
+            tried = tried.saturating_add(1);
+            let Some(band) = border_band(&inward_line(img, side, t), span) else { continue };
+            insets.push(band.inset);
+            side_samples.extend(band.pixels);
+        }
+        // A patch inside the picture hits a few lines at different depths. A real edge repeats.
+        if insets_agree(&insets, span, tried) {
+            let hit = median_inset(&mut insets).map(|inset| EdgeWalk { inset, rebate: true });
+            samples.extend(side_samples);
+            match side {
+                Side::Top => top = hit,
+                Side::Bottom => bottom = hit,
+                Side::Left => left = hit,
+                Side::Right => right = hit,
+            }
+        }
+    }
+    let color = (samples.len() >= 16).then(|| median_color(&stronger_orange(&samples)));
+    Plateau { frame: frame_from_edges(top, bottom, left, right, w, h), color }
+}
+
+fn median_inset(v: &mut [usize]) -> Option<usize> {
+    if v.is_empty() {
+        return None;
+    }
+    v.sort_unstable();
+    v.get(v.len() / 2).copied()
+}
+
+/// The stops are one edge when the middle half of them sit close together. A handful of lines
+/// only count when that edge is still in the outer rim; an edge most of the side agrees on can
+/// sit further in.
+fn insets_agree(insets: &[usize], span: usize, tried: usize) -> bool {
+    if insets.len() < 4 || span == 0 {
+        return false;
+    }
+    let mut sorted = insets.to_vec();
+    sorted.sort_unstable();
+    let lo = sorted.get(sorted.len() / 4).copied().unwrap_or(0);
+    let hi_at = sorted.len().saturating_mul(3) / 4;
+    let hi = sorted.get(hi_at.min(sorted.len() - 1)).copied().unwrap_or(lo);
+    if hi.saturating_sub(lo).saturating_mul(5) >= span {
+        return false;
+    }
+    let mid = sorted.get(sorted.len() / 2).copied().unwrap_or(0);
+    let majority = insets.len().saturating_mul(2) >= tried.max(1);
+    majority || mid.saturating_mul(100) <= span.saturating_mul(14)
+}
+
+fn inward_line(img: &Rgb32f, side: Side, t: usize) -> Vec<[f32; 3]> {
+    let (w, h) = (img.width, img.height);
+    let vertical = matches!(side, Side::Top | Side::Bottom);
+    let len = if vertical { h } else { w };
+    let along = if vertical { w } else { h };
+    if t >= along || len < 4 || img.data.len() < w.saturating_mul(h) {
+        return Vec::new();
+    }
+    let from_end = matches!(side, Side::Bottom | Side::Right);
+    let limit = (len.saturating_mul(70) / 100).max(4).min(len);
+    let mut out = Vec::with_capacity(limit);
+    for step in 0..limit {
+        let i = if from_end { len - 1 - step } else { step };
+        let (x, y) = if vertical { (t, i) } else { (i, t) };
+        let idx = y.saturating_mul(w).saturating_add(x);
+        if let Some(p) = img.data.get(idx).copied() {
+            out.push(p);
+        }
+    }
+    out
+}
+
+/// One side's rebate: the first stable orange run after the holder. A washed rim in front of a
+/// lamp gives way to the longer, more orange run behind it. `span` is the full side, so a long
+/// walk across the picture cannot turn an interior patch into the border.
+fn border_band(line: &[[f32; 3]], span: usize) -> Option<Band> {
+    if line.len() < 6 {
+        return None;
+    }
+    let mut i = 0usize;
+    let mut from_lamp = false;
+    while i < line.len() {
+        let p = line.get(i).copied()?;
+        if !is_outside_margin(p) {
+            break;
+        }
+        if is_light_table(p) || is_clipped_lamp(p) {
+            from_lamp = true;
+        }
+        i = i.saturating_add(1);
+    }
+    let skipped = i;
+    // The holder is a rim. Blank film that only appears after a third of the frame is the picture.
+    if skipped.saturating_mul(100) > span.saturating_mul(30) {
+        return None;
+    }
+    let rest = line.get(skipped..)?;
+    let first = stable_run(rest)?;
+    let mut chosen = first;
+    let mut origin = skipped;
+    if from_lamp && washed_score(&chosen.pixels) > 0.15 {
+        let first_end = chosen.inset;
+        if let Some(second) = rest.get(first_end..).and_then(stable_run)
+            && deeper_orange(&chosen.pixels, &second.pixels)
+        {
+            origin = skipped.saturating_add(first_end);
+            chosen = second;
+        }
+    }
+    Some(Band { inset: origin.saturating_add(chosen.inset), pixels: chosen.pixels })
+}
+
+fn washed_score(px: &[[f32; 3]]) -> f32 {
+    let m = median_color(px);
+    orange_score([m[0] as f32, m[1] as f32, m[2] as f32])
+}
+
+/// The run behind a washed rim is the film when it is more orange and at least as wide.
+fn deeper_orange(rim: &[[f32; 3]], film: &[[f32; 3]]) -> bool {
+    if film.len() < rim.len() || rim.is_empty() {
+        return false;
+    }
+    let rim_score = washed_score(rim);
+    let film_score = washed_score(film);
+    if !(rim_score > film_score * 1.35 && film_score > 0.0) {
+        return false;
+    }
+    let rim_y = luminance_2020(median_color(rim).map(|v| v as f32)) as f64;
+    let film_y = luminance_2020(median_color(film).map(|v| v as f32)) as f64;
+    film_y > rim_y * 0.45
+}
+
+fn outer_level(line: &[[f32; 3]]) -> Option<f64> {
+    // The first orange pixels against the holder. A brighter picture further in must not set
+    // this, or the rebate reads as too dark to be film and the side is dropped.
+    let mut ys = Vec::new();
+    for p in line.iter().take(12) {
+        if is_outside_margin(*p) || !orange_family(*p) {
+            continue;
+        }
+        let y = luminance_2020(*p) as f64;
+        if y.is_finite() {
+            ys.push(y);
+        }
+    }
+    if ys.len() < 4 {
+        return None;
+    }
+    let level = percentile_f64(&mut ys, 0.50)?;
+    (level > 0.05).then_some(level)
+}
+
+fn med3(line: &[[f32; 3]], i: usize) -> [f32; 3] {
+    let n = line.len();
+    let Some(center) = line.get(i).copied() else { return [0.0; 3] };
+    if n == 0 {
+        return center;
+    }
+    let i0 = i.saturating_sub(1);
+    let i2 = (i + 1).min(n - 1);
+    let a = line.get(i0).copied().unwrap_or(center);
+    let c = line.get(i2).copied().unwrap_or(center);
+    let mut out = [0.0f32; 3];
+    for ch in 0..3 {
+        let (lo, hi) = if a[ch] < c[ch] { (a[ch], c[ch]) } else { (c[ch], a[ch]) };
+        let b = center[ch];
+        out[ch] = if b < lo {
+            lo
+        } else if b > hi {
+            hi
+        } else {
+            b
+        };
+    }
+    out
+}
+
+fn near_ref(p: [f32; 3], reference: [f64; 3]) -> bool {
+    for c in 0..3 {
+        let a = p[c] as f64;
+        let b = reference[c];
+        if !a.is_finite() || !b.is_finite() {
+            return false;
+        }
+        let scale = a.max(b).max(0.05);
+        if (a - b).abs() / scale > 0.08 {
+            return false;
+        }
+    }
+    true
+}
+
+/// A run of one color that actually ends. A field with no inner edge is not a rebate.
+fn stable_run(line: &[[f32; 3]]) -> Option<Band> {
+    let level = outer_level(line)?;
+    let mut kept = Vec::new();
+    let mut misses = 0usize;
+    let mut started = false;
+    let mut inset = 0usize;
+    let mut origin: Option<[f64; 3]> = None;
+    let start_by = (line.len() / 5).max(8);
+    for (i, raw) in line.iter().copied().enumerate() {
+        let y_raw = luminance_2020(raw) as f64;
+        if !started {
+            if i > start_by {
+                return None;
+            }
+            if orange_family(raw) && y_raw >= level * 0.82 && !is_outside_margin(raw) {
+                started = true;
+                kept.push(raw);
+                inset = i.saturating_add(1);
+            }
+            continue;
+        }
+        if origin.is_none() && kept.len() >= 5 {
+            origin = Some(median_color(&kept));
+        }
+        let reference = if let Some(locked) = origin { locked } else { median_color(&kept) };
+        let sample = med3(line, i);
+        let y = luminance_2020(sample) as f64;
+        let ok = orange_family(sample) && y >= level * 0.72 && near_ref(sample, reference);
+        if ok {
+            kept.push(sample);
+            misses = 0;
+            inset = i.saturating_add(1);
+        } else {
+            misses = misses.saturating_add(1);
+            if misses >= 4 {
+                break;
+            }
+        }
+    }
+    if misses < 4 || kept.len() < 4 {
+        return None;
+    }
+    let med = median_color(&kept);
+    if !orange_family([med[0] as f32, med[1] as f32, med[2] as f32]) {
+        return None;
+    }
+    Some(Band { inset, pixels: kept })
+}
+
 /// Fit a quad to the rebate. `None` when the border is missing or the fit swallows the picture.
 pub fn detect_frame(img: &Rgb32f, stock: FilmStock) -> Option<FilmFrame> {
     if img.width < 8 || img.height < 8 {
         return None;
     }
+    // The quad is fit on the area average, so a dusty pixel is not an edge and the full scan is
+    // not walked once per row. The bright ring inside a holder wins. When the picture is as
+    // orange as that ring, the flat band against the holder is the edge. Base color is read
+    // from the original pixels.
     let small = preview(img);
+    if stock == FilmStock::ColorNeg {
+        if let Some(frame) = rebate_hit(&small).map(|hit| hit.frame) {
+            return Some(frame);
+        }
+        if let Some(frame) = plateau_border(&small).frame {
+            return Some(frame);
+        }
+    }
+    if let Some(frame) = rebate_insets(&small, stock) {
+        return Some(frame);
+    }
     let rebate = rebate_mask(&small, stock);
     let n = rebate.len();
     if n == 0 {
@@ -1120,17 +1876,39 @@ fn is_outside(p: [f32; 3], stock: FilmStock, rim: bool) -> bool {
 
 fn preview(img: &Rgb32f) -> Rgb32f {
     let long = img.width.max(img.height);
-    if long <= 256 {
+    if long <= 256 || img.width == 0 || img.height == 0 {
         return img.clone();
     }
+    // Area average, not the one source pixel under the sample. Grain on a rebate is the same
+    // orange as the film once the block is averaged, and a single dusty pixel is not a border.
     let k = 256.0 / long as f64;
-    let w = ((img.width as f64 * k).round() as usize).max(1);
-    let h = ((img.height as f64 * k).round() as usize).max(1);
-    Rgb32f::from_fn(w, h, |x, y| {
-        let sx = (x * img.width / w).min(img.width.saturating_sub(1));
-        let sy = (y * img.height / h).min(img.height.saturating_sub(1));
-        img.get(sx, sy)
-    })
+    let w = ((img.width as f64 * k).round() as usize).clamp(1, img.width);
+    let h = ((img.height as f64 * k).round() as usize).clamp(1, img.height);
+    Rgb32f::from_fn(w, h, |x, y| block_mean(img, x, y, w, h))
+}
+
+fn block_mean(img: &Rgb32f, x: usize, y: usize, w: usize, h: usize) -> [f32; 3] {
+    let x0 = x.saturating_mul(img.width) / w.max(1);
+    let y0 = y.saturating_mul(img.height) / h.max(1);
+    let x1 = (x.saturating_add(1).saturating_mul(img.width) / w.max(1)).max(x0.saturating_add(1)).min(img.width);
+    let y1 = (y.saturating_add(1).saturating_mul(img.height) / h.max(1)).max(y0.saturating_add(1)).min(img.height);
+    let mut s = [0.0f64; 3];
+    let mut n = 0u32;
+    for yy in y0..y1 {
+        let row = yy.saturating_mul(img.width);
+        for xx in x0..x1 {
+            let Some(p) = img.data.get(row.saturating_add(xx)) else { continue };
+            for c in 0..3 {
+                s[c] += p[c] as f64;
+            }
+            n = n.saturating_add(1);
+        }
+    }
+    if n == 0 {
+        return [0.0; 3];
+    }
+    let inv = 1.0 / f64::from(n);
+    s.map(|v| (v * inv) as f32)
 }
 
 fn oriented_box(pts: &[(usize, usize)], w: usize, h: usize) -> Option<FilmFrame> {
@@ -1299,6 +2077,8 @@ fn measure(img: &Rgb32f, film: &Film) -> FrameStats {
         mid_b: film.mid_b,
         grade: film.grade,
         shoulder: film.shoulder,
+        pivot: film.pivot,
+        anchor: film.anchor,
     };
     if img.width == 0 || img.height == 0 {
         return empty;
@@ -1322,9 +2102,8 @@ fn measure(img: &Rgb32f, film: &Film) -> FrameStats {
     } else {
         Placement::slide(film.grade, exposure_for(&interior, &base, &gamma, film.stock))
     };
-    let bins = density_bins(&interior, &base);
+    let bins = density_bins(&interior, if film.stock.negative() { &placed.base } else { &base });
     FrameStats {
-        base,
         gamma,
         exposure: placed.exposure,
         rebate_level,
@@ -1341,6 +2120,9 @@ fn measure(img: &Rgb32f, film: &Film) -> FrameStats {
         mid_b: placed.mid_b,
         grade: placed.grade,
         shoulder: placed.shoulder,
+        pivot: placed.pivot,
+        anchor: placed.anchor,
+        base: if film.stock.negative() { placed.base } else { base },
     }
 }
 
@@ -1385,11 +2167,32 @@ pub struct Placement {
     pub shoulder: f64,
     pub mid_a: f64,
     pub mid_b: f64,
+    /// Straightened density contrast holds still, and its scene light at [`Self::grade`].
+    pub pivot: f64,
+    pub anchor: f64,
+    /// Black point the print used. The rebate, unless the picture itself is clearer than that
+    /// rebate: then it is the clear end of the picture, so a thin subject is a shadow instead of
+    /// one black.
+    pub base: [f64; 3],
 }
 
 impl Placement {
     fn slide(grade: f64, exposure: f64) -> Self {
-        Self { d_lo: 0.0, d_hi: 1.0, fog: [0.0; 3], axis: [1.0; 3], white: [0.0; 3], grade, exposure, shoulder: 0.0, mid_a: 0.0, mid_b: 0.0 }
+        Self {
+            d_lo: 0.0,
+            d_hi: 1.0,
+            fog: [0.0; 3],
+            axis: [1.0; 3],
+            white: [0.0; 3],
+            grade,
+            exposure,
+            shoulder: 0.0,
+            mid_a: 0.0,
+            mid_b: 0.0,
+            pivot: 0.0,
+            anchor: 0.0,
+            base: [1.0; 3],
+        }
     }
 }
 
@@ -1401,53 +2204,25 @@ fn mask_base(
     interior: &[[f32; 3]],
     fallback: [f64; 3],
 ) -> ([f64; 3], bool, bool) {
-    // The whole scan has no picture edge. Blank film is what touches the scan edge, same as frame
-    // detection. Orange that sits only in the picture is not a border. The tests see the stored
-    // scan; the color they record is the transmission the print divides by.
-    let edge = if frame.is_full() { Some(rebate_mask(img, stock)) } else { None };
-    let mut outside_orange = Vec::new();
-    let mut outside_clear = Vec::new();
-    let mut outside_pale = Vec::new();
-    let mut outside_bw = Vec::new();
-    for (i, seen) in img.data.iter().enumerate() {
-        let on_border = if let Some(edge) = &edge {
-            edge.get(i).copied().unwrap_or(false)
-        } else {
-            let x = (i % img.width) as f64 / img.width as f64;
-            let y = (i / img.width) as f64 / img.height.max(1) as f64;
-            !inside_frame(frame, x + 0.5 / img.width as f64, y + 0.5 / img.height.max(1) as f64)
-        };
-        if !on_border {
-            continue;
-        }
-        let measured = transmission((*seen).map(|c| c as f64), capture).map(|c| c as f32);
-        match stock {
-            FilmStock::ColorNeg if is_mask_orange(*seen) => {
-                outside_orange.push(measured);
-                if is_clear_film(*seen) {
-                    outside_clear.push(measured);
-                }
-            }
-            FilmStock::ColorNeg if is_pale_rebate(*seen) => outside_pale.push(measured),
-            FilmStock::BwNeg if !is_light_table(*seen) && luminance_2020(*seen) > 0.35 => outside_bw.push(measured),
-            _ => {}
-        }
-    }
     if stock == FilmStock::ColorNeg {
-        // Unexposed film outside the frame, from the bright clear tail, preferring the strongest
-        // orange in that tail. A darker base shrinks every density and the grade then blows the
-        // print out. A paler base (too much blue) leaves the print cold. Orange in the picture is
-        // not a border, so a miss keeps the base already measured.
-        let chosen = if outside_clear.len() >= 8 {
-            clearest_orange(&outside_clear)
-        } else if outside_orange.len() >= 8 {
-            clearest_orange(&outside_orange)
-        } else if outside_pale.len() >= 8 {
-            border_color(&outside_pale)
-        } else {
-            None
-        };
+        // The flat band next to the holder, not every bright orange pixel. A sky that matches the
+        // rebate stays in the picture. Per-pixel orange below keeps a checkerboard rebate orange;
+        // a block mean would mix the junk columns in.
+        if let Some(stored) = plateau_border(img).color {
+            return (transmission(stored, capture), true, true);
+        }
+        let (clear, orange, pale) = color_border_lists(img, capture, frame);
+        let chosen = mode_color(&clear).or_else(|| mode_color(&orange)).or_else(|| mode_color(&pale));
         return (chosen.unwrap_or(fallback), true, chosen.is_some());
+    }
+    // Black and white: the bright film outside the frame. A color negative is measured per pixel
+    // above, so a dark holder in the same block cannot mix into the orange.
+    let edge = if frame.is_full() { Some(rebate_mask(img, stock)) } else { None };
+    let mut outside_bw = Vec::new();
+    for (seen, measured) in border_areas(img, capture, |i| pixel_on_border(i, img, frame, edge.as_deref())) {
+        if stock == FilmStock::BwNeg && !is_light_table(seen) && luminance_2020(seen) > 0.35 {
+            outside_bw.push(measured);
+        }
     }
     if stock == FilmStock::BwNeg
         && let Some(b) = bright_tail(&outside_bw, 0.90)
@@ -1462,72 +2237,137 @@ fn mask_base(
     bright_tail(interior, 0.97).map(|b| (b, false, false)).unwrap_or(([1.0, 1.0, 1.0], false, false))
 }
 
-/// Clear film near the brightest sample, averaged from the half with the lowest blue/red.
-fn clearest_orange(samples: &[[f32; 3]]) -> Option<[f64; 3]> {
-    let kept: Vec<[f32; 3]> = samples.iter().copied().filter(|p| !is_light_table(*p)).collect();
-    if kept.len() < 8 {
-        return None;
+/// Orange pixels on the rebate, one pixel at a time. A block mean would mix the black holder
+/// into the film and the base would follow whichever side of the border the block landed on.
+fn color_border_lists(img: &Rgb32f, capture: FilmCapture, frame: &FilmFrame) -> (Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<[f32; 3]>) {
+    let edge = if frame.is_full() { Some(rebate_mask(img, FilmStock::ColorNeg)) } else { None };
+    let mut clear = Vec::new();
+    let mut orange = Vec::new();
+    let mut pale = Vec::new();
+    if img.width == 0 {
+        return (clear, orange, pale);
     }
-    let max_y = kept.iter().map(|p| luminance_2020(*p)).fold(0.0f32, f32::max);
-    let floor = max_y * 0.85;
-    let mut bright: Vec<[f32; 3]> = kept.iter().copied().filter(|p| luminance_2020(*p) >= floor).collect();
-    if bright.len() < 8 {
-        bright = kept;
-    }
-    // Lowest blue and green against red. A yellow sample has little blue but too much green,
-    // and using it as the mask prints the picture green.
-    bright.sort_by(|a, b| {
-        let score = |p: [f32; 3]| (p[2] / p[0].max(1e-3)) * (p[1] / p[0].max(1e-3));
-        score(*a).partial_cmp(&score(*b)).unwrap_or(std::cmp::Ordering::Equal)
-    });
-    let n = (bright.len() / 2).max(1).min(bright.len());
-    let band = bright.get(..n)?;
-    let count = band.len() as f64;
-    let mut s = [0.0f64; 3];
-    for p in band {
-        for c in 0..3 {
-            s[c] += p[c] as f64;
+    if let Some(edge) = &edge {
+        let n = edge.iter().filter(|on| **on).count();
+        // The orange flood filled the picture. There is no separate rebate in this crop.
+        if n.saturating_mul(2) > edge.len() {
+            return (clear, orange, pale);
         }
     }
-    Some(s.map(|v| (v / count).max(1e-4)))
+    for (i, px) in img.data.iter().enumerate() {
+        if !pixel_on_border(i, img, frame, edge.as_deref()) || is_outside_margin(*px) {
+            continue;
+        }
+        let measured = transmission([px[0] as f64, px[1] as f64, px[2] as f64], capture).map(|v| v as f32);
+        if is_mask_orange(*px) {
+            orange.push(measured);
+            if is_clear_film(*px) {
+                clear.push(measured);
+            }
+        } else if is_pale_rebate(*px) {
+            pale.push(measured);
+        }
+    }
+    (clear, orange, pale)
 }
 
-/// Color of a pale or white-balanced rebate. A bright spike above the median is the lamp and
-/// is left out. The warmer half of what remains wins; a neutral rebate averages to itself.
-fn border_color(samples: &[[f32; 3]]) -> Option<[f64; 3]> {
-    let kept: Vec<[f32; 3]> = samples.iter().copied().filter(|p| !is_clipped_lamp(*p)).collect();
-    if kept.len() < 8 {
-        return None;
+fn pixel_on_border(i: usize, img: &Rgb32f, frame: &FilmFrame, edge: Option<&[bool]>) -> bool {
+    if let Some(edge) = edge {
+        return edge.get(i).copied().unwrap_or(false);
     }
-    let mut ys: Vec<f32> = kept.iter().copied().map(luminance_2020).collect();
-    ys.sort_by(|a, b| a.total_cmp(b));
-    let med = ys.get(ys.len() / 2).copied().unwrap_or(0.0);
-    let lo = med * 0.82;
-    let hi = med * 1.18;
-    let band: Vec<[f32; 3]> = kept
-        .iter()
-        .copied()
-        .filter(|p| {
-            let y = luminance_2020(*p);
-            y >= lo && y <= hi
-        })
-        .collect();
-    let use_band: &[[f32; 3]] = if band.len() >= 8 { &band } else { &kept };
-    let mut ordered = use_band.to_vec();
-    ordered.sort_by(|a, b| {
-        let score = |p: [f32; 3]| (p[2] / p[0].max(1e-3)) * (p[1] / p[0].max(1e-3));
-        score(*a).partial_cmp(&score(*b)).unwrap_or(std::cmp::Ordering::Equal)
-    });
-    let n = (ordered.len() / 2).max(1).min(ordered.len());
-    let slice = ordered.get(..n)?;
-    let count = slice.len() as f64;
-    let mut s = [0.0f64; 3];
-    for p in slice {
-        for c in 0..3 {
-            s[c] += p[c] as f64;
+    let w = img.width;
+    let h = img.height.max(1);
+    if w == 0 {
+        return false;
+    }
+    let x = (i % w) as f64 / w as f64;
+    let y = (i / w) as f64 / h as f64;
+    !inside_frame(frame, x + 0.5 / w as f64, y + 0.5 / h as f64)
+}
+
+#[derive(Clone, Copy)]
+struct AreaSum {
+    stored: [f64; 3],
+    linear: [f64; 3],
+    n: u32,
+}
+
+/// Blocks of blank film for a black-and-white rebate. Small scans stay one pixel, so a clean
+/// test image does not mix the lamp into the rebate. A large scan averages each block first.
+fn area_cell(img: &Rgb32f) -> usize {
+    let long = img.width.max(img.height);
+    if long < 192 { 1 } else { (long / 48).clamp(2, 32) }
+}
+
+/// `(stored mean, transmission mean)` of each block that holds border pixels.
+fn border_areas(img: &Rgb32f, capture: FilmCapture, border: impl Fn(usize) -> bool) -> Vec<([f32; 3], [f32; 3])> {
+    let w = img.width;
+    if w == 0 || img.height == 0 || img.data.is_empty() {
+        return Vec::new();
+    }
+    let cell = area_cell(img);
+    let cw = w.div_ceil(cell).max(1);
+    let ch = img.height.div_ceil(cell).max(1);
+    let ncells = cw.saturating_mul(ch);
+    if ncells == 0 || ncells > img.data.len().saturating_mul(2).max(1) {
+        return Vec::new();
+    }
+    let mut acc = vec![AreaSum { stored: [0.0; 3], linear: [0.0; 3], n: 0 }; ncells];
+    for (i, px) in img.data.iter().enumerate() {
+        if !border(i) {
+            continue;
         }
+        let slot = (i / w / cell).saturating_mul(cw).saturating_add((i % w) / cell);
+        let Some(a) = acc.get_mut(slot) else { continue };
+        let lin = transmission([px[0] as f64, px[1] as f64, px[2] as f64], capture);
+        for c in 0..3 {
+            a.stored[c] += px[c] as f64;
+            a.linear[c] += lin[c];
+        }
+        a.n = a.n.saturating_add(1);
     }
-    Some(s.map(|v| (v / count).max(1e-4)))
+    let mut out = Vec::new();
+    for a in &acc {
+        if a.n == 0 {
+            continue;
+        }
+        let inv = 1.0 / f64::from(a.n);
+        out.push((a.stored.map(|v| (v * inv) as f32), a.linear.map(|v| (v * inv) as f32)));
+    }
+    out
+}
+
+/// Blue and green against red. Lower is a stronger orange.
+fn orange_score(p: [f32; 3]) -> f32 {
+    let r = p[0].max(1e-3);
+    (p[2] / r) * (p[1] / r)
+}
+
+fn stronger_orange(band: &[[f32; 3]]) -> Vec<[f32; 3]> {
+    if band.len() < 8 {
+        return band.to_vec();
+    }
+    let mut scores: Vec<f64> = band.iter().copied().map(|p| orange_score(p) as f64).collect();
+    let low = percentile_f64(&mut scores, 0.40).unwrap_or(0.0);
+    let high = percentile_f64(&mut scores, 0.60).unwrap_or(0.0);
+    if !(high > low * 2.0 && low > 1e-6) {
+        return band.to_vec();
+    }
+    let cut = low * 1.05;
+    let orange: Vec<[f32; 3]> = band.iter().copied().filter(|p| (orange_score(*p) as f64) <= cut).collect();
+    // A washed lamp beside real film is about half the border, and the orange half is the film.
+    // A grain clump is more orange too, and it is the minority. Keeping that minority paints the
+    // print with the speck.
+    if orange.len() >= band.len() / 2 && orange.len() >= 8 { orange } else { band.to_vec() }
+}
+
+fn median_color(px: &[[f32; 3]]) -> [f64; 3] {
+    let mut out = [0.0f64; 3];
+    for c in 0..3 {
+        let mut col: Vec<f64> = px.iter().map(|p| p[c] as f64).collect();
+        out[c] = percentile_f64(&mut col, 0.50).unwrap_or(0.0).max(1e-4);
+    }
+    out
 }
 
 fn bright_tail(px: &[[f32; 3]], start_frac: f64) -> Option<[f64; 3]> {
@@ -1564,9 +2404,9 @@ fn y2020(c: [f64; 3]) -> f64 {
 
 /// Map the interior's density onto a print. The mask stays black. Exposure is the scale that
 /// puts the middle of the picture on [`crate::tone::GREY`]. Contrast is the slope that puts the
-/// bright end at 1; `fit_grade` solves it, and a reprint keeps the grade it was given. On a
-/// colour negative a near-neutral bright end is gained per channel, fading in toward that end.
-/// A saturated bright end is left alone.
+/// body of the picture on the paper; `fit_grade` solves it, and a reprint keeps the grade it was
+/// given. The pivot is the density that grade holds still. On a colour negative a near-neutral
+/// bright end is gained per channel, fading in toward that end. A saturated bright end is left alone.
 fn place_negative(
     interior: &[[f32; 3]],
     base: &[f64; 3],
@@ -1578,6 +2418,9 @@ fn place_negative(
     locked: Option<([f64; 3], [f64; 3])>,
 ) -> Placement {
     let grade = if grade.is_finite() { grade.clamp(0.2, 6.0) } else { 1.0 };
+    // A thin subject, or a brighter center than the edge the rebate was measured on, sits above
+    // the rebate. Clamping there turns the whole shadow into one black and the grain into dots.
+    let base = if color { clear_end_base(interior, *base) } else { *base };
     let identity = Placement {
         d_lo: 0.0,
         d_hi: 1.0,
@@ -1589,11 +2432,14 @@ fn place_negative(
         shoulder: 0.0,
         mid_a: 0.0,
         mid_b: 0.0,
+        pivot: 0.0,
+        anchor: 0.0,
+        base,
     };
     if interior.len() < 8 {
         return identity;
     }
-    let dens: Vec<[f64; 3]> = interior.iter().map(|p| density_rgb(*p, base, gamma, color, scan)).collect();
+    let dens: Vec<[f64; 3]> = interior.iter().map(|p| density_rgb(*p, &base, gamma, color, scan)).collect();
     let ys: Vec<f64> = dens.iter().copied().map(y2020).collect();
     let mut for_hi = ys.clone();
     let mut rough_hi = percentile_f64(&mut for_hi, 0.995).unwrap_or(1.0);
@@ -1601,7 +2447,8 @@ fn place_negative(
         rough_hi = 0.15;
     }
     // Clear film that leaked into the frame is density ~0. It must not become the gray axis.
-    // The exposure median keeps those pixels: dropping them is what printed a thin negative black.
+    // The exposure median keeps a thin body that sits just above zero: dropping that body is
+    // what printed a thin negative black. A separate spike of exact zeros is not the middle.
     let floor = (rough_hi * 0.04).max(0.02);
     let axis_sample: Vec<[f64; 3]> = dens.iter().copied().zip(ys.iter()).filter(|(_, y)| **y > floor).map(|(d, _)| d).collect();
     let axis_sample = if axis_sample.len() < 8 { dens.clone() } else { axis_sample };
@@ -1616,38 +2463,122 @@ fn place_negative(
     for d in &dens {
         corrected.push(straighten(*d, fog, axis));
     }
+    // A dense picture never reaches clear film. The empty density under it is not a shadow:
+    // leaving it there prints the whole frame gray. The toe stays, so the darkest grain is not a cliff.
+    let lift = shadow_lift(&corrected);
+    if lift > 0.0 {
+        for d in &mut corrected {
+            for c in d.iter_mut() {
+                *c = (*c - lift).max(0.0);
+            }
+        }
+    }
     let mut hi_src: Vec<f64> = corrected.iter().copied().map(y2020).collect();
     let d_hi = percentile_f64(&mut hi_src, 0.99).unwrap_or(1.0).max(0.15);
     let white = if color { balanced_white(&corrected, d_hi) } else { [d_hi, d_hi, d_hi] };
     let grade = if fit_grade { grade_for(&corrected, white) } else { grade };
-    let (med, peak) = luminance_ends(&corrected, white, grade, &mut hi_src);
+    let (med, _, peak) = luminance_ends(&corrected, white, grade, &mut hi_src);
     // One scale. It puts the middle on middle grey. The bright end is wherever the grade left it.
     let exposure = (f64::from(crate::tone::GREY) / med).log2().clamp(-6.0, 6.0);
     let placed_peak = peak * (2.0f64).powf(exposure);
     let shoulder = if fit_grade { paper_shoulder(placed_peak) } else { 0.0 };
     let slope = (2.0f64).powf(exposure);
+    let mut pivot_ys: Vec<f64> = corrected.iter().copied().map(y2020).collect();
+    let pivot = density_median(&mut pivot_ys).max(0.0);
+    let shared = white.into_iter().fold(0.0, f64::max).max(0.05);
+    let anchor = density_to_light(pivot, shared, FILM_GAMMA / grade);
     let mut printed = Vec::with_capacity(corrected.len());
     for d in &corrected {
         let h = balanced_light(*d, white, FILM_GAMMA / grade);
         printed.push(h.map(|v| (v * slope).max(0.0)));
     }
     let (mid_a, mid_b) = midtone_ab(&printed);
-    Placement { d_lo: 0.0, d_hi, fog, axis, white, grade, exposure, shoulder, mid_a, mid_b }
+    Placement { d_lo: lift, d_hi, fog, axis, white, grade, exposure, shoulder, mid_a, mid_b, pivot, anchor, base }
 }
 
-/// Contrast that makes the 98th percentile of print luminance `1/0.18` times the median.
-/// Exposure then puts the median on middle grey and the bright end on 1. A harder grade raises
+/// Black point for a colour negative. The rebate, unless a large part of the picture is clearer
+/// than that rebate. The clear end of the picture is then the black point, and it is a real
+/// colour from that end, not one channel from a lamp and another from the subject.
+fn clear_end_base(interior: &[[f32; 3]], rebate: [f64; 3]) -> [f64; 3] {
+    if interior.len() < 32 {
+        return rebate;
+    }
+    let rebate_y = y2020(rebate);
+    if !(rebate_y.is_finite() && rebate_y > 1e-4) {
+        return rebate;
+    }
+    let film: Vec<[f32; 3]> = interior.iter().copied().filter(|p| !is_light_table(*p) && !is_clipped_lamp(*p)).collect();
+    if film.len() < 32 {
+        return rebate;
+    }
+    let mut clear = 0usize;
+    for p in &film {
+        let y = y2020([p[0] as f64, p[1] as f64, p[2] as f64]);
+        if y > rebate_y * 1.005 {
+            clear += 1;
+        }
+    }
+    // Grain on a normal negative crosses the rebate. A thin subject is a quarter of the picture.
+    if clear.saturating_mul(4) < film.len() {
+        return rebate;
+    }
+    let mut ys: Vec<f64> = film.iter().map(|p| y2020([p[0] as f64, p[1] as f64, p[2] as f64])).collect();
+    let Some(tip_y) = percentile_f64(&mut ys, 0.97) else { return rebate };
+    if !(tip_y.is_finite() && tip_y > rebate_y) {
+        return rebate;
+    }
+    let band: Vec<[f32; 3]> = film
+        .iter()
+        .copied()
+        .filter(|p| {
+            let y = y2020([p[0] as f64, p[1] as f64, p[2] as f64]);
+            y >= tip_y * 0.97 && y <= tip_y * 1.04
+        })
+        .collect();
+    let color = if band.len() >= 8 {
+        median_color(&band)
+    } else {
+        let mut tip = rebate;
+        for c in 0..3 {
+            let mut col: Vec<f64> = film.iter().map(|p| p[c] as f64).collect();
+            if let Some(v) = percentile_f64(&mut col, 0.97) {
+                tip[c] = v;
+            }
+        }
+        tip
+    };
+    let mut out = rebate;
+    for c in 0..3 {
+        let cap = rebate[c] * 4.0;
+        // A hair clearer than the clear film. The subject that *is* that film then has a toe,
+        // so exposure can lift it. Sitting the base on the subject itself clamps it to black.
+        if rebate[c] > 1e-6 && color[c] > rebate[c] && cap.is_finite() {
+            out[c] = (color[c] * 1.06).min(cap);
+        }
+    }
+    out
+}
+
+/// Contrast for the picture in hand. A body with its own bright end (the 90th percentile sits
+/// above the middle) is placed on the paper, and a brighter speck may pass 1. A body that is one
+/// tone, with the only separation in a small bright patch, keeps that patch as the bright end:
+/// stretching the flat body would pin the grade and drop the patch to grey. A harder grade raises
 /// the ratio. The search stops at the grade limits.
 fn grade_for(corrected: &[[f64; 3]], white: [f64; 3]) -> f64 {
-    let target = 1.0 / f64::from(crate::tone::GREY);
+    let mut dens: Vec<f64> = corrected.iter().copied().map(y2020).collect();
+    let d50 = percentile_f64(&mut dens, 0.50).unwrap_or(0.0);
+    let d90 = percentile_f64(&mut dens, 0.90).unwrap_or(d50);
+    let body = d90 > d50 + 0.06;
+    let grey = f64::from(crate::tone::GREY);
+    let target = if body { BODY_PRINT / grey } else { 1.0 / grey };
     // The kernel caps 10^(D/γ) at 10^8. Past that the bright end stacks on one value and a
     // harder grade looks flatter, so the search must stay on the straight line.
     let d_hi = white.into_iter().fold(0.0_f64, f64::max).max(0.15);
     let grade_max = (FILM_GAMMA * 6.0 / d_hi).clamp(0.2, 6.0);
     let mut ys = Vec::with_capacity(corrected.len());
     let ratio_at = |grade: f64, ys: &mut Vec<f64>| {
-        let (med, peak) = luminance_ends(corrected, white, grade, ys);
-        peak / med
+        let (med, p90, p98) = luminance_ends(corrected, white, grade, ys);
+        (if body { p90 } else { p98 }) / med
     };
     if ratio_at(0.2, &mut ys) >= target {
         return 0.2;
@@ -1667,16 +2598,74 @@ fn grade_for(corrected: &[[f64; 3]], white: [f64; 3]) -> f64 {
     0.5 * (lo + hi)
 }
 
-/// Median and 98th percentile of print luminance at `grade`, before exposure.
-fn luminance_ends(corrected: &[[f64; 3]], white: [f64; 3], grade: f64, ys: &mut Vec<f64>) -> (f64, f64) {
+/// Median, 90th percentile and 98th percentile of print luminance at `grade`, before exposure.
+fn luminance_ends(corrected: &[[f64; 3]], white: [f64; 3], grade: f64, ys: &mut Vec<f64>) -> (f64, f64, f64) {
     let gamma = FILM_GAMMA / grade.clamp(0.2, 6.0);
     ys.clear();
     for d in corrected {
         ys.push(y2020(balanced_light(*d, white, gamma)));
     }
-    let med = percentile_f64(ys, 0.50).unwrap_or(f64::from(crate::tone::GREY)).max(1e-5);
-    let peak = percentile_f64(ys, 0.98).unwrap_or(med).max(med);
-    (med, peak)
+    let med = exposure_median(ys);
+    let body = percentile_f64(ys, 0.90).unwrap_or(med).max(med);
+    let peak = percentile_f64(ys, 0.98).unwrap_or(body).max(body);
+    (med, body, peak)
+}
+
+/// Density removed under a picture that sits far above clear film. Zero when the frame already
+/// reaches down toward the mask, so a thin subject is not clipped to a black cliff.
+fn shadow_lift(corrected: &[[f64; 3]]) -> f64 {
+    if corrected.len() < 16 {
+        return 0.0;
+    }
+    let mut ys: Vec<f64> = corrected.iter().copied().map(y2020).collect();
+    let p05 = percentile_f64(&mut ys, 0.05).unwrap_or(0.0);
+    let p50 = percentile_f64(&mut ys, 0.50).unwrap_or(p05);
+    let hi = percentile_f64(&mut ys, 0.99).unwrap_or(p05).max(1e-3);
+    if !(p05.is_finite() && hi.is_finite()) || p05 <= SHADOW_TOE || p05 / hi < SHADOW_GAP {
+        return 0.0;
+    }
+    let cap = (p50 - 0.15).max(0.0);
+    (p05 - SHADOW_TOE).clamp(0.0, cap)
+}
+
+/// Median straightened density. An exact-zero spike is unexposed film, same rule as
+/// [`exposure_median`], so the pivot sits on the picture.
+fn density_median(ys: &mut [f64]) -> f64 {
+    if ys.is_empty() {
+        return 0.0;
+    }
+    ys.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let zeros = ys.iter().take_while(|y| **y < 1e-4).count();
+    if zeros.saturating_mul(2) > ys.len() && ys.len() - zeros >= 8 {
+        percentile_f64(&mut ys[zeros..], 0.50).unwrap_or(0.0)
+    } else {
+        percentile_f64(ys, 0.50).unwrap_or(0.0)
+    }
+}
+
+/// Middle of the print. An exact-zero spike with a real picture above it is unexposed film, not
+/// the middle: fitting it pins contrast at the softest grade and exposure at the clamp, and the
+/// grain prints as dots. A body that is only just above zero stays, so a thin negative is not
+/// printed from its dense specks alone.
+fn exposure_median(ys: &mut [f64]) -> f64 {
+    let fallback = f64::from(crate::tone::GREY);
+    if ys.is_empty() {
+        return fallback;
+    }
+    let all = percentile_f64(ys, 0.50).unwrap_or(fallback).max(1e-5);
+    if ys.len() < 16 {
+        return all;
+    }
+    let zeros = ys.iter().take_while(|y| **y < 1e-4).count();
+    if zeros.saturating_mul(2) <= ys.len() {
+        return all;
+    }
+    let body = &mut ys[zeros..];
+    if body.len() < 8 {
+        return all;
+    }
+    let med = percentile_f64(body, 0.50).unwrap_or(all);
+    if med > 0.02 { med.max(1e-5) } else { all }
 }
 
 /// Shoulder that prints `peak` at 1 and leaves every value below the knee alone.
@@ -2137,6 +3126,14 @@ mod tests {
     use super::*;
     use lightcraft_develop::{FilmCapture, FilmScan};
 
+    /// −1..1, stable for a given pixel. Not a film measurement.
+    fn rebate_grain(x: usize, y: usize, channel: usize) -> f32 {
+        let n = x.wrapping_mul(374761393) ^ y.wrapping_mul(668265263) ^ channel.wrapping_mul(2246822519);
+        let n = n.wrapping_mul(3266489917);
+        let u = (n >> 16) & 0xffff;
+        u as f32 / 32768.0 - 1.0
+    }
+
     #[test]
     fn margin_drops_the_frame_edge_and_keeps_the_mask_and_grade() {
         let base = [0.90f64, 0.42, 0.16];
@@ -2251,7 +3248,7 @@ mod tests {
         f.set_base([0.8, 0.5, 0.25]);
         let k = FilmKernel::from_film(&f);
         let w = k.words();
-        assert_eq!(w.len(), 43);
+        assert_eq!(w.len(), 46);
         assert_eq!(w[0], (0.8f32).to_bits());
         assert_eq!(w[23], 1 | 2, "negative and mono flags");
         assert_eq!(f32::from_bits(w[24]), 2.2);
@@ -2543,6 +3540,226 @@ mod tests {
     }
 
     #[test]
+    fn a_hot_pixel_does_not_set_the_orange_base() {
+        let film_px = [0.80f32, 0.38, 0.14];
+        // Brighter than the film, still clear film, and less orange. The old floor was 85% of the
+        // single brightest pixel, which drops the real rebate and keeps the spike.
+        let hot = [0.97f32, 0.55, 0.28];
+        assert!(is_clear_film(film_px) && is_clear_film(hot));
+        assert!(luminance_2020(film_px) < luminance_2020(hot) * 0.85);
+        let img = Rgb32f::from_fn(80, 60, |x, y| {
+            let border = x < 8 || y < 8 || x >= 72 || y >= 52;
+            if !border {
+                return [0.20, 0.22, 0.24];
+            }
+            if x.wrapping_mul(3).wrapping_add(y.wrapping_mul(5)) % 11 == 0 { hot } else { film_px }
+        });
+        let analysis = analyze_image(&img, &Film::default());
+        assert!(analysis.stats.mask_measured, "the noisy rebate was not a border");
+        let b = analysis.film.base();
+        for c in 0..3 {
+            assert!((b[c] - film_px[c] as f64).abs() < 0.03, "channel {c}: base {b:?} followed the hot pixel {hot:?}");
+        }
+    }
+
+    #[test]
+    fn a_border_click_reads_the_film_around_a_grain_clump() {
+        let film_px = [0.80f32, 0.38, 0.14];
+        let grain = [0.98f32, 0.62, 0.30];
+        assert!(is_clear_film(grain));
+        let img = Rgb32f::from_fn(240, 180, |x, y| {
+            let border = x < 28 || y < 24 || x >= 212 || y >= 156;
+            if !border {
+                return [0.18, 0.20, 0.22];
+            }
+            if (30..42).contains(&x) && (4..16).contains(&y) { grain } else { film_px }
+        });
+        let s = sample_border(&img, 36.0 / 240.0, 10.0 / 180.0).expect("border");
+        for c in 0..3 {
+            assert!((s[c] - film_px[c] as f64).abs() < 0.05, "channel {c}: {s:?} followed the grain {grain:?}");
+        }
+        let local = sample(&img, 36.0 / 240.0, 10.0 / 180.0).expect("local");
+        assert!((local[0] - grain[0] as f64).abs() < 0.08, "the 5×5 under the clump should still be the grain, got {local:?}");
+    }
+
+    #[test]
+    fn a_dark_holder_does_not_hide_the_rebate() {
+        let holder = [0.14f32, 0.13, 0.12];
+        let orange = [0.80f32, 0.38, 0.14];
+        assert!(is_holder(holder) && !is_mask_orange(holder));
+        let img = Rgb32f::from_fn(100, 80, |x, y| {
+            if x < 8 || y < 8 || x >= 92 || y >= 72 {
+                holder
+            } else if x < 16 || y < 14 || x >= 84 || y >= 66 {
+                orange
+            } else {
+                [0.16, 0.18, 0.22]
+            }
+        });
+        let frame = detect_frame(&img, FilmStock::ColorNeg).expect("rebate inside the holder");
+        assert!(inside_frame(&frame, 0.5, 0.5), "picture {frame:?}");
+        assert!(!inside_frame(&frame, 0.02, 0.5), "holder was the picture {frame:?}");
+        assert!(!inside_frame(&frame, 0.12, 0.5), "rebate was the picture {frame:?}");
+        let analysis = analyze_image(&img, &Film::default());
+        assert!(analysis.frame_error.is_none(), "{:?}", analysis.frame_error);
+        let b = analysis.film.base();
+        for c in 0..3 {
+            assert!((b[c] - orange[c] as f64).abs() < 0.06, "channel {c}: base {b:?}");
+        }
+    }
+
+    #[test]
+    fn a_small_negative_in_a_black_holder_has_one_border_color() {
+        let holder = [0.05f32, 0.045, 0.04];
+        let orange = [0.80f32, 0.38, 0.14];
+        assert!(is_outside_margin(holder));
+        let img = Rgb32f::from_fn(180, 140, |x, y| {
+            let in_film = (60..120).contains(&x) && (48..100).contains(&y);
+            if !in_film {
+                return holder;
+            }
+            let rebate = x < 68 || y < 56 || x >= 112 || y >= 92;
+            if rebate { orange } else { [0.22, 0.16, 0.10] }
+        });
+        let frame = detect_frame(&img, FilmStock::ColorNeg).expect("the holder hid the rebate");
+        assert!(inside_frame(&frame, 0.5, 0.5), "picture {frame:?}");
+        assert!(!inside_frame(&frame, 0.05, 0.05), "holder was the picture {frame:?}");
+        let left = frame.corners.iter().map(|c| c[0]).fold(f64::MAX, f64::min);
+        assert!((left - 68.0 / 180.0).abs() < 0.04, "left edge {left} frame {frame:?}");
+        let on_rebate = sample_border(&img, 64.0 / 180.0, 52.0 / 140.0).expect("rebate");
+        let on_holder = sample_border(&img, 20.0 / 180.0, 20.0 / 140.0).expect("holder");
+        let in_picture = sample_border(&img, 90.0 / 180.0, 70.0 / 140.0).expect("picture");
+        for (name, s) in [("rebate", on_rebate), ("holder", on_holder), ("picture", in_picture)] {
+            for c in 0..3 {
+                assert!((s[c] - orange[c] as f64).abs() < 0.05, "{name} channel {c}: {s:?}");
+            }
+        }
+        assert!(
+            (on_rebate[0] - on_holder[0]).abs() < 0.02 && (on_rebate[2] - in_picture[2]).abs() < 0.02,
+            "clicks diverged {on_rebate:?} {on_holder:?} {in_picture:?}"
+        );
+    }
+
+    #[test]
+    fn a_bright_sky_beside_the_rebate_is_still_one_border() {
+        // The picture's sky is almost as bright as the rebate, and the building is only a little
+        // darker. A brightness test calls both of them blank film. The rebate is the flat band
+        // against the holder, and every click on that scan is that one color.
+        let holder = [0.04f32, 0.02, 0.01];
+        let rebate = [0.996f32, 0.706, 0.475];
+        let building = [0.973f32, 0.659, 0.424];
+        let sky = [1.0f32, 0.639, 0.251];
+        let grain = [0.99f32, 0.40, 0.05];
+        let (w, h) = (240usize, 160usize);
+        let img = Rgb32f::from_fn(w, h, |x, y| {
+            if y < 16 || y + 8 >= h || x < 4 || x + 16 >= w {
+                return holder;
+            }
+            if x == 8 && y == 22 {
+                return grain;
+            }
+            if y < 28 || y + 16 >= h || x < 12 || x + 26 >= w {
+                return rebate;
+            }
+            if x < w / 2 { building } else { sky }
+        });
+        assert!(rebate_hit(&img).is_none(), "the sky was classified as a separate picture");
+        let frame = detect_frame(&img, FilmStock::ColorNeg).expect("the holder hid a bright negative");
+        assert!(inside_frame(&frame, 0.30, 0.50), "building {frame:?}");
+        assert!(inside_frame(&frame, 0.72, 0.50), "sky {frame:?}");
+        assert!(!inside_frame(&frame, 0.01, 0.50), "holder {frame:?}");
+        assert!(!inside_frame(&frame, 8.0 / w as f64, 22.0 / h as f64), "rebate {frame:?}");
+        let on_grain = sample_border(&img, 8.0 / w as f64, 22.0 / h as f64).expect("grain");
+        let on_holder = sample_border(&img, 2.0 / w as f64, 8.0 / h as f64).expect("holder");
+        let on_sky = sample_border(&img, 0.72, 0.50).expect("sky");
+        let on_building = sample_border(&img, 0.30, 0.50).expect("building");
+        for (name, s) in [("grain", on_grain), ("holder", on_holder), ("sky", on_sky), ("building", on_building)] {
+            for c in 0..3 {
+                assert!((s[c] - rebate[c] as f64).abs() < 0.05, "{name} channel {c}: {s:?} vs {rebate:?}");
+            }
+        }
+        assert!(
+            (on_grain[0] - on_sky[0]).abs() < 0.02 && (on_holder[2] - on_building[2]).abs() < 0.02,
+            "clicks diverged {on_grain:?} {on_holder:?} {on_sky:?} {on_building:?}"
+        );
+        let b = analyze_image(&img, &Film::default()).film.base();
+        for c in 0..3 {
+            assert!((b[c] - rebate[c] as f64).abs() < 0.05, "auto base channel {c}: {b:?}");
+        }
+    }
+
+    #[test]
+    fn a_border_sample_is_the_area_not_one_hot_pixel() {
+        let film_px = [0.80f32, 0.38, 0.14];
+        let mut img = Rgb32f::filled(20, 20, film_px);
+        img.set(10, 10, [0.99, 0.70, 0.40]);
+        let s = sample(&img, 0.5, 0.5).expect("sample");
+        for c in 0..3 {
+            assert!((s[c] - film_px[c] as f64).abs() < 0.005, "channel {c}: {s:?}");
+        }
+    }
+
+    #[test]
+    fn grain_on_the_rebate_averages_to_the_film() {
+        let film_px = [0.80f32, 0.38, 0.14];
+        // Long side above 256 so the frame is fit to block averages, and above 192 so the base is
+        // a block median. A point sample of this grain is often not orange.
+        let (w, h) = (768usize, 576usize);
+        let img = Rgb32f::from_fn(w, h, |x, y| {
+            let border = x < 48 || y < 40 || x + 48 >= w || y + 40 >= h;
+            if !border {
+                return [0.18, 0.20, 0.22];
+            }
+            if x.wrapping_mul(7).wrapping_add(y.wrapping_mul(3)) % 17 == 0 {
+                return [0.99, 0.70, 0.36];
+            }
+            let mut p = film_px;
+            for c in 0..3 {
+                p[c] = (p[c] + 0.22 * rebate_grain(x, y, c)).clamp(0.02, 1.2);
+            }
+            p
+        });
+        let analysis = analyze_image(&img, &Film::default());
+        assert!(analysis.frame_error.is_none(), "{:?}", analysis.frame_error);
+        assert!(analysis.stats.mask_measured);
+        let b = analysis.film.base();
+        for c in 0..3 {
+            assert!((b[c] - film_px[c] as f64).abs() < 0.05, "channel {c}: base {b:?} is not the rebate {film_px:?}");
+        }
+        let y = |p: [f32; 3]| 0.2627 * p[0] + 0.6780 * p[1] + 0.0593 * p[2];
+        let mask = FilmKernel::from_film(&analysis.film).apply(film_px);
+        assert!(y(mask) < 0.08, "the film does not print black {mask:?} base {b:?}");
+    }
+
+    #[test]
+    fn a_noisy_edge_is_found_from_the_area_average() {
+        // Point samples land on the even columns, which are not orange. The area of each block is.
+        let (w, h) = (512usize, 384usize);
+        let orange = [0.80f32, 0.38, 0.14];
+        let junk = [0.20f32, 0.22, 0.18];
+        assert!(!is_mask_orange(junk) && !is_pale_rebate(junk));
+        let img = Rgb32f::from_fn(w, h, |x, y| {
+            let border = x < 48 || y < 36 || x + 48 >= w || y + 36 >= h;
+            if !border {
+                [0.16, 0.18, 0.20]
+            } else if x % 2 == 0 {
+                junk
+            } else {
+                orange
+            }
+        });
+        let frame = detect_frame(&img, FilmStock::ColorNeg).expect("the averaged border is orange");
+        assert!(inside_frame(&frame, 0.5, 0.5), "the picture dropped out {frame:?}");
+        assert!(!inside_frame(&frame, 0.01, 0.5), "the border was taken as the picture {frame:?}");
+        let analysis = analyze_image(&img, &Film::default());
+        assert!(analysis.stats.mask_measured, "the area of the rebate was not a base");
+        let b = analysis.film.base();
+        // The junk columns are not film. The base is the orange ones.
+        assert!((b[0] - orange[0] as f64).abs() < 0.06, "red {b:?}");
+        assert!(b[2] < b[0] * 0.45, "the rebate stayed orange {b:?}");
+    }
+
+    #[test]
     fn a_light_table_is_not_the_mask_and_the_print_stays_in_range() {
         let orange = [0.80f32, 0.38, 0.14];
         let img = Rgb32f::from_fn(100, 70, |x, y| {
@@ -2703,6 +3920,8 @@ mod tests {
         film.mid_b = stats.mid_b;
         film.grade = stats.grade;
         film.exposure = stats.exposure;
+        film.pivot = stats.pivot;
+        film.anchor = stats.anchor;
         let k = FilmKernel::from_film(&film);
         let y = |p: [f32; 3]| 0.2627 * p[0] + 0.6780 * p[1] + 0.0593 * p[2];
         let mid = k.apply(orange.map(|c| c * 10f32.powf(-0.55)));
@@ -2731,6 +3950,8 @@ mod tests {
             mid_b: 0.0,
             grade: 1.0,
             shoulder: 0.0,
+            pivot: 0.0,
+            anchor: 0.0,
         };
         let mut b = a.clone();
         b.base = [0.40, 0.20, 0.10];
@@ -2772,6 +3993,8 @@ mod tests {
             mid_b: 0.0,
             grade: 1.0,
             shoulder: 0.0,
+            pivot: 0.0,
+            anchor: 0.0,
         };
         let bare = FrameStats { mask_measured: false, base: [0.50, 0.50, 0.50], rebate_level: 0.50, ..measured.clone() };
         let shared = share_roll(&[measured.clone(), bare.clone(), bare.clone()]);
@@ -2883,7 +4106,12 @@ mod tests {
                 film_px.map(|c| c * 10f32.powf(-d))
             }
         });
-        assert!(detect_frame(&img, FilmStock::ColorNeg).is_none(), "the orange picture swallowed the rebate");
+        // A flat rebate still has an inner edge when the picture is a step darker. A frame that
+        // cannot find that edge leaves the sprocket gate to place the picture.
+        if let Some(frame) = detect_frame(&img, FilmStock::ColorNeg) {
+            assert!(inside_frame(&frame, 0.5, 0.5), "picture {frame:?}");
+            assert!(!inside_frame(&frame, 4.0 / w as f64, 10.0 / h as f64), "rebate was the picture {frame:?}");
+        }
         let analysis = analyze_image(&img, &Film::default());
         assert!(analysis.frame_error.is_none(), "{:?}", analysis.frame_error);
         assert!(!analysis.film.frame.is_full(), "the sprocket gate was ignored");
@@ -2951,6 +4179,108 @@ mod tests {
         let blown = y(FilmKernel::from_film(&full.film).apply(picture));
         let placed = y(FilmKernel::from_film(&part.film).apply(picture));
         assert!((placed - 0.18).abs() < 0.08, "the crop did not place the picture {placed}");
-        assert!((blown - placed).abs() > 0.2, "the surround did not move the print {blown} vs {placed}");
+        assert!((blown - placed).abs() < 0.05, "the surround moved the print {blown} vs {placed}");
+    }
+
+    #[test]
+    fn a_thin_subject_keeps_shadow_tone_instead_of_a_black_cliff() {
+        let rebate = [0.80f32, 0.36, 0.14];
+        // Clearer than the rebate: an underexposed face. The beard is a step denser. The
+        // background carries real density. Grain a few percent either side of the face must
+        // not jump from black to white.
+        let face = [0.88f32, 0.42, 0.17];
+        let beard = [0.76f32, 0.33, 0.12];
+        let bg = rebate.map(|c| c * 10f32.powf(-0.45));
+        let (w, h) = (120usize, 90usize);
+        let img = Rgb32f::from_fn(w, h, |x, y| {
+            if x < 8 || y < 8 || x + 8 >= w || y + 8 >= h {
+                return rebate;
+            }
+            // The thin subject is most of the frame, the way a backlit portrait is.
+            if x >= 96 || y >= 78 {
+                bg
+            } else if (36..78).contains(&x) && (40..68).contains(&y) {
+                beard
+            } else {
+                face
+            }
+        });
+        let analysis = analyze_image(&img, &Film::default());
+        assert!(analysis.film.exposure.abs() < 4.0, "exposure pegged at {}", analysis.film.exposure);
+        let k = FilmKernel::from_film(&analysis.film);
+        let y = |p: [f32; 3]| 0.2627 * p[0] + 0.6780 * p[1] + 0.0593 * p[2];
+        let face_y = y(k.apply(face));
+        let beard_y = y(k.apply(beard));
+        let bg_y = y(k.apply(bg));
+        assert!(bg_y > face_y + 0.08, "background {bg_y} should be lighter than the thin face {face_y}");
+        assert!(beard_y > face_y + 0.03, "beard detail collapsed {beard_y} vs face {face_y}");
+        assert!(face_y < 0.7, "the thin face blew out {face_y}");
+        let up = y(k.apply(face.map(|c| c * 1.04)));
+        let down = y(k.apply(face.map(|c| c * 0.96)));
+        assert!((up - down).abs() < 0.45, "grain around the face became stipple {up} {down}");
+    }
+
+    /// Luminance at three percentiles of the frame, low to high.
+    fn print_span(img: &Rgb32f, film: &Film) -> (f32, f32, f32) {
+        let k = FilmKernel::from_film(film);
+        let y = |p: [f32; 3]| 0.2627 * p[0] + 0.6780 * p[1] + 0.0593 * p[2];
+        let mut ys = Vec::new();
+        for (i, p) in img.data.iter().enumerate() {
+            let x = (i % img.width) as f64 / img.width as f64;
+            let py = (i / img.width) as f64 / img.height.max(1) as f64;
+            if inside_frame(&film.frame, x, py) {
+                ys.push(y(k.apply(*p)));
+            }
+        }
+        assert!(ys.len() > 8, "the frame held nothing");
+        ys.sort_by(|a, b| a.total_cmp(b));
+        let at = |q: f32| ys[((ys.len() - 1) as f32 * q).round() as usize];
+        (at(0.10), at(0.50), at(0.90))
+    }
+
+    #[test]
+    fn contrast_moves_the_ends_and_holds_the_middle() {
+        let orange = [0.80f32, 0.38, 0.14];
+        let img = Rgb32f::from_fn(90, 60, |x, y| {
+            if x < 6 || y < 6 || x >= 84 || y >= 54 {
+                orange
+            } else {
+                let d = 0.20 + 0.90 * (x - 6) as f32 / 77.0;
+                orange.map(|c| c * 10f32.powf(-d))
+            }
+        });
+        let analysis = analyze_image(&img, &Film { scan: FilmScan::Flat, ..Film::default() });
+        let (lo, mid, hi) = print_span(&img, &analysis.film);
+        assert!((mid - 0.18).abs() < 0.06, "middle {mid}");
+        assert!(hi - lo > 0.40, "auto contrast {lo}..{hi}");
+        let mut hard = analysis.film.clone();
+        hard.grade = (analysis.film.grade * 1.8).clamp(0.2, 6.0);
+        let mut soft = analysis.film.clone();
+        soft.grade = (analysis.film.grade * 0.55).clamp(0.2, 6.0);
+        let (hlo, hmid, hhi) = print_span(&img, &hard);
+        let (slo, smid, shi) = print_span(&img, &soft);
+        assert!((hmid - mid).abs() < 0.05, "hard grade moved the middle {mid} -> {hmid}");
+        assert!((smid - mid).abs() < 0.05, "soft grade moved the middle {mid} -> {smid}");
+        assert!(hhi - hlo > hi - lo + 0.04, "harder grade did not add contrast {} vs {}", hhi - hlo, hi - lo);
+        assert!(shi - slo + 0.04 < hi - lo, "softer grade did not lose contrast {} vs {}", shi - slo, hi - lo);
+    }
+
+    #[test]
+    fn a_dense_negative_prints_across_the_scale() {
+        for (stock, rebate) in [(FilmStock::BwNeg, [0.82f32, 0.82, 0.82]), (FilmStock::ColorNeg, [0.80, 0.38, 0.14])] {
+            let img = Rgb32f::from_fn(90, 60, |x, y| {
+                if x < 6 || y < 6 || x >= 84 || y >= 54 {
+                    rebate
+                } else {
+                    let d = 1.05 + 0.30 * (x - 6) as f32 / 77.0;
+                    rebate.map(|c| c * 10f32.powf(-d))
+                }
+            });
+            let analysis = analyze_image(&img, &Film { stock, scan: FilmScan::Flat, ..Film::default() });
+            let (lo, mid, hi) = print_span(&img, &analysis.film);
+            assert!(lo < 0.10, "{stock:?} shadows stayed gray {lo} lift {} grade {}", analysis.film.d_lo, analysis.film.grade);
+            assert!(hi > 0.55, "{stock:?} highlights never opened {hi}");
+            assert!((mid - 0.18).abs() < 0.08, "{stock:?} middle {mid}");
+        }
     }
 }

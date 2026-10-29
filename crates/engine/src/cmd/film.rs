@@ -53,7 +53,8 @@ fn active(s: &Session, c: &str) -> Result<PhotoId> {
     s.active().ok_or_else(|| bad(c, "no active photo"))
 }
 
-/// Place the print again from the current frame and margin. The mask base and paper contrast stay.
+/// Place the print again from the current frame and margin. Paper contrast stays. The black point
+/// stays on the rebate unless the picture is clearer than that rebate.
 /// A crop is the whole measurement: pixels outside it are not in the sample.
 pub(crate) fn reprint(img: &lightcraft_raster::Rgb32f, d: &mut DevelopSettings) {
     let cropped = if d.crop.geometry.is_identity() { None } else { Some(film::within_crop(img, d.crop.geometry)) };
@@ -65,16 +66,25 @@ pub(crate) fn reprint(img: &lightcraft_raster::Rgb32f, d: &mut DevelopSettings) 
     if film::trimmed_sample_count(img, &film) < 8 {
         return;
     }
-    let placed = film::place(img, &film);
-    d.film.d_lo = placed.d_lo;
-    d.film.d_hi = placed.d_hi;
-    d.film.set_fog(placed.fog);
-    d.film.set_axis(placed.axis);
-    d.film.set_white(placed.white);
-    d.film.mid_a = placed.mid_a;
-    d.film.mid_b = placed.mid_b;
-    d.film.grade = placed.grade;
-    d.film.exposure = placed.exposure;
+    apply_placement(&mut d.film, film::place(img, &film));
+}
+
+/// Write a solved print onto the film. The black point moves only for a negative.
+fn apply_placement(film: &mut Film, placed: film::Placement) {
+    if film.stock.negative() {
+        film.set_base(placed.base);
+    }
+    film.d_lo = placed.d_lo;
+    film.d_hi = placed.d_hi;
+    film.set_fog(placed.fog);
+    film.set_axis(placed.axis);
+    film.set_white(placed.white);
+    film.mid_a = placed.mid_a;
+    film.mid_b = placed.mid_b;
+    film.grade = placed.grade;
+    film.exposure = placed.exposure;
+    film.pivot = placed.pivot;
+    film.anchor = placed.anchor;
 }
 
 fn commit(s: &mut Session, id: PhotoId, d: DevelopSettings, label: &str) -> Result<()> {
@@ -159,16 +169,10 @@ pub fn specs() -> Vec<CommandSpec> {
                     d.film.set_axis(share.axis);
                     let img = scanner_image(s, *id, "film.analyzeRoll")?;
                     let img = film::within_crop(&img, d.crop.geometry);
-                    let placed = film::place_keeping_axis(&img, &d.film);
-                    d.film.d_lo = placed.d_lo;
-                    d.film.d_hi = placed.d_hi;
-                    d.film.set_white(placed.white);
-                    d.film.mid_a = placed.mid_a;
-                    d.film.mid_b = placed.mid_b;
-                    d.film.grade = placed.grade;
                     // The shared axis changes the densities. Exposure is solved again with it,
                     // per frame, so the gray correction does not also move the midtone.
-                    d.film.exposure = placed.exposure;
+                    let placed = film::place_keeping_axis(&img, &d.film);
+                    apply_placement(&mut d.film, placed);
                     d.film.intent = intent;
                     d.film.enabled = true;
                     // One batch, not set_develop: Auto Sync must not copy the last frame onto the others.
@@ -284,7 +288,7 @@ pub fn specs() -> Vec<CommandSpec> {
             let d0 = s.develop_of(id).unwrap_or_default();
             let mut d = (*d0).clone();
             // Measure again. An older quad can still contain the printing on the rebate.
-            if let Some(frame) = film::detect_gate(&img, d.film.stock).or_else(|| film::detect_frame(&img, d.film.stock)) {
+            if let Some(frame) = film::detect_frame(&img, d.film.stock).or_else(|| film::detect_gate(&img, d.film.stock)) {
                 d.film.frame = frame;
             } else if d.film.frame.is_full() {
                 return Err(bad("film.cropToImage", "no film border found"));
@@ -310,7 +314,8 @@ fn pick(s: &mut Session, p: &Value, cmd: &str, which: Pick) -> Result<Value> {
     let id = active(s, cmd)?;
     let img = scanner_image(s, id, cmd)?;
     let d0 = s.develop_of(id).unwrap_or_default();
-    let sample = film::sample(&img, x, y).map(|p| film::transmission(p, d0.film.capture)).ok_or_else(|| bad(cmd, "the photo has no pixels"))?;
+    let picked = if matches!(which, Pick::Base) { film::sample_border(&img, x, y) } else { film::sample(&img, x, y) };
+    let sample = picked.map(|p| film::transmission(p, d0.film.capture)).ok_or_else(|| bad(cmd, "the photo has no pixels"))?;
     let mut d = (*d0).clone();
     match which {
         Pick::Base => {
@@ -319,6 +324,11 @@ fn pick(s: &mut Session, p: &Value, cmd: &str, which: Pick) -> Result<Value> {
             }
             d.film.set_base(sample);
             d.film.enabled = true;
+            // The same border, every click. The picture quad comes with it so exposure is solved
+            // on the picture, not on whichever pixel the cursor hit.
+            if let Some(frame) = film::detect_frame(&img, d.film.stock) {
+                d.film.frame = frame;
+            }
         }
         Pick::Shadow => {
             d.film.shadow_pick = Some(sample);
@@ -353,15 +363,7 @@ fn pick(s: &mut Session, p: &Value, cmd: &str, which: Pick) -> Result<Value> {
     }
     if d.film.stock.negative() {
         let placed = if matches!(which, Pick::Gray) { film::place_keeping_axis(&img, &d.film) } else { film::place(&img, &d.film) };
-        d.film.d_lo = placed.d_lo;
-        d.film.d_hi = placed.d_hi;
-        d.film.set_fog(placed.fog);
-        d.film.set_axis(placed.axis);
-        d.film.set_white(placed.white);
-        d.film.mid_a = placed.mid_a;
-        d.film.mid_b = placed.mid_b;
-        d.film.grade = placed.grade;
-        d.film.exposure = placed.exposure;
+        apply_placement(&mut d.film, placed);
     }
     let base = d.film.base();
     let gamma = d.film.gamma();

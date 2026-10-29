@@ -948,6 +948,19 @@ fn negative_craft_matches_the_cpu() {
             SourceInfo::default(),
         ),
         ("negative craft scanner", film(FilmStock::ColorNeg, FilmCapture::Linear, |_| {}), scanner_info()),
+        (
+            "negative craft contrast pivot",
+            film(FilmStock::ColorNeg, FilmCapture::Linear, |f| {
+                f.grade = 1.8;
+                f.white_r = 0.9;
+                f.white_g = 1.0;
+                f.white_b = 1.05;
+                f.d_lo = 0.12;
+                f.pivot = 0.35;
+                f.anchor = 0.08;
+            }),
+            SourceInfo::default(),
+        ),
     ];
     for (name, settings, info) in cases {
         check(name, &src, info, settings, &req);
