@@ -300,7 +300,7 @@ controls! {
     "film.gammaB" => film.gamma_b, "Contrast Blue", Film, 0.05, 4, 1, 0.01, 2, Plain;
     "film.exposure" => film.exposure, "Exposure", Film, -6, 6, 0, 0.01, 2, Centered;
     "film.grade" => film.grade, "Contrast", Film, 0.2, 6, 1, 0.01, 2, Plain;
-    "film.black" => film.black, "Blacks", Film, -0.2, 0.5, 0, 0.001, 3, Centered;
+    "film.black" => film.black, "Blacks", Film, -0.05, 0.1, 0, 0.001, 3, Centered;
     "film.inset" => film.inset, "Margin", Film, 0, 40, 0, 1, 0, Plain;
     "film.shoulder" => film.shoulder, "Shoulder", Film, 0, 2, 0, 0.01, 2, Plain;
     "film.presat" => film.presat, "Saturation", Film, -100, 100, 0, 1, 0, Centered;

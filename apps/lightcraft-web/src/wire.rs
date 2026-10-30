@@ -128,9 +128,10 @@ impl WireJob {
 
     /// Identifies the decoded source this job needs.
     fn source_key(&self) -> String {
+        let film = self.settings.film.enabled;
         match &self.origin {
-            Source::File { path } => format!("{}:{:?}:{}:{path}", self.cache_generation, self.source_identity, self.max_edge),
-            Source::Demo { scene } => format!("{}:{:?}:{}:demo:{scene}", self.cache_generation, self.source_identity, self.max_edge),
+            Source::File { path } => format!("{}:{:?}:{}:{film}:{path}", self.cache_generation, self.source_identity, self.max_edge),
+            Source::Demo { scene } => format!("{}:{:?}:{}:{film}:demo:{scene}", self.cache_generation, self.source_identity, self.max_edge),
         }
     }
 
@@ -181,7 +182,11 @@ impl WorkerCore {
             None => {
                 let src = match (&job.origin, original) {
                     (Source::File { .. }, Some(bytes)) => {
-                        let (image, info) = lightcraft_engine::files::load_bytes(bytes, job.max_edge)?;
+                        let (image, info) = if job.settings.film.enabled {
+                            lightcraft_engine::files::load_bytes_transmission(bytes, job.max_edge)?
+                        } else {
+                            lightcraft_engine::files::load_bytes(bytes, job.max_edge)?
+                        };
                         DecodedSource::new(Arc::new(image), Some(info))
                     }
                     (Source::File { path }, None) => return Err(format!("{path}: original not found in browser storage")),

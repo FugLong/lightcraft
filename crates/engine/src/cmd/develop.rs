@@ -191,7 +191,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 }
                 let label = if vals.len() == 1 { controls::find(&vals[0].0).map(|c| c.label).unwrap_or("Edit").to_string() } else { "Edit".into() };
                 let angle = vals.iter().any(|(k, _)| k == CROP_ANGLE);
-                let touches_inset = vals.iter().any(|(k, _)| k == "film.inset");
+                let touches_inset = vals.iter().any(|(k, _)| super::film::remeasures(k));
                 let apply = |d: &mut DevelopSettings, info: &lightcraft_pipeline::SourceInfo, dims: (f64, f64)| {
                     let before = d.crop.geometry;
                     if vals.iter().any(|(k, _)| k == "wb.temp" || k == "wb.tint") {
@@ -252,7 +252,7 @@ pub fn specs() -> Vec<CommandSpec> {
             let delta = f64_req(p, "delta", "develop.adjust")?;
             let id = active(s, "develop.adjust")?;
             let (info, dims) = (s.source_info(id), crop_dims(s, id));
-            let img = if c == "film.inset" && s.develop_of(id).is_some_and(|d| d.film.enabled) {
+            let img = if super::film::remeasures(&c) && s.develop_of(id).is_some_and(|d| d.film.enabled) {
                 Some(super::film::scanner_image(s, id, "develop.adjust")?)
             } else {
                 None
@@ -394,9 +394,9 @@ pub fn specs() -> Vec<CommandSpec> {
             has_active,
             |s, _| {
                 let id = active(s, "develop.autoBwMix")?;
-                let src = s.source_now(id, SourceLevel::Thumb).map_err(|e| bad("develop.autoBwMix", e))?;
-                let info = s.source_info(id);
                 let d = s.develop_of(id).unwrap_or_default();
+                let src = s.source_now_for(id, SourceLevel::Thumb, d.film.enabled).map_err(|e| bad("develop.autoBwMix", e))?;
+                let info = s.source_info(id);
                 let seen = lightcraft_pipeline::film::for_auto(&src, &info, &d.film);
                 let m = lightcraft_pipeline::auto::auto_bw_mix(&seen, &info, &d);
                 edit(s, "develop.autoBwMix", "Auto B&W Mix", |d| {
@@ -410,9 +410,9 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         cmd!("develop.auto", "Auto Settings", ["Photo"], Some("Shift+A"), "{}", has_active, |s, _| {
             let id = active(s, "develop.auto")?;
-            let src = s.source_now(id, SourceLevel::Thumb).map_err(|e| bad("develop.auto", e))?;
-            let info = s.source_info(id);
             let d = s.develop_of(id).unwrap_or_default();
+            let src = s.source_now_for(id, SourceLevel::Thumb, d.film.enabled).map_err(|e| bad("develop.auto", e))?;
+            let info = s.source_info(id);
             let seen = lightcraft_pipeline::film::for_auto(&src, &info, &d.film);
             let a = lightcraft_pipeline::auto::auto_tone(&seen, &info, &d);
             edit(s, "develop.auto", "Auto", |d| {
@@ -439,12 +439,13 @@ pub fn specs() -> Vec<CommandSpec> {
                 let mode: WbMode =
                     serde_json::from_value(p.get("mode").cloned().unwrap_or(json!("custom"))).map_err(|e| bad("develop.wb", e.to_string()))?;
                 let id = active(s, "develop.wb")?;
-                let info = s.source_info(id);
+                let mut info = s.source_info(id);
                 let (mut t, mut tint) = match mode {
                     WbMode::AsShot => (info.as_shot_temp, info.as_shot_tint),
                     WbMode::Auto => {
-                        let src = s.source_now(id, SourceLevel::Thumb).map_err(|e| bad("develop.wb", e))?;
                         let film = s.develop_of(id).unwrap_or_default().film.clone();
+                        let src = s.source_now_for(id, SourceLevel::Thumb, film.enabled).map_err(|e| bad("develop.wb", e))?;
+                        info = s.source_info(id);
                         // Balance the print. The thumbnail is still the negative until this step.
                         let seen = lightcraft_pipeline::film::for_auto(&src, &info, &film);
                         lightcraft_pipeline::auto::auto_wb(&seen, &info)
@@ -474,9 +475,9 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("develop.wbPick", "White Balance Selector", [], Some("W"), "{x, y} normalized image coords of a neutral point", has_active, |s, p| {
             let (x, y) = (f64_req(p, "x", "develop.wbPick")?, f64_req(p, "y", "develop.wbPick")?);
             let id = active(s, "develop.wbPick")?;
-            let src = s.source_now(id, SourceLevel::Thumb).map_err(|e| bad("develop.wbPick", e))?;
-            let info = s.source_info(id);
             let d = s.develop_of(id).unwrap_or_default();
+            let src = s.source_now_for(id, SourceLevel::Thumb, d.film.enabled).map_err(|e| bad("develop.wbPick", e))?;
+            let info = s.source_info(id);
             // Sample a small neighbourhood in the oriented source, then convert it. The film
             // curve is not linear, so each sample is converted before the average.
             let o = src.oriented(d.orientation);

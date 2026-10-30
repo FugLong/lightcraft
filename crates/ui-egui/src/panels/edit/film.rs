@@ -32,7 +32,7 @@ pub(super) fn section(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId, d
                 }
                 ui.add_space(10.0);
                 ui.label(
-                    RichText::new(crate::i18n::tr("Leave the blank film in the scan. Convert prints from that border."))
+                    RichText::new(crate::i18n::tr("Leave the orange border in the scan. Convert prints from that, like a lab."))
                         .font(t.font(12.0))
                         .color(t.text_dim),
                 );
@@ -44,6 +44,7 @@ pub(super) fn section(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId, d
                 control(app, ui, d, c, true);
             }
             if is_color(d) {
+                control(app, ui, d, "film.presat", true);
                 divider(ui);
                 for c in
                     ["film.temp", "film.tint", "film.shadowTemp", "film.shadowTint", "film.midTemp", "film.midTint", "film.highTemp", "film.highTint"]
@@ -96,7 +97,7 @@ fn is_color(d: &DevelopSettings) -> bool {
 
 fn click_hint(tool: &str) -> Option<&'static str> {
     match tool {
-        "filmBase" => Some("Click the blank film around the picture. A pale border is fine. Not a blown-out lamp."),
+        "filmBase" => Some("Click the unexposed film — the orange border. Not the lamp, not the picture."),
         "filmGray" => Some("Click a tone that should print gray."),
         "filmShadow" => Some("Click a dark tone that should be neutral."),
         "filmHighlight" => Some("Click a light tone that should be neutral."),
@@ -218,35 +219,21 @@ fn more(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId, d: &DevelopSett
         ui.label(RichText::new(crate::i18n::tr("Cast Auto removed")).font(t.font(12.0)).color(t.text_dim));
         ui.label(RichText::new(lightcraft_pipeline::film::cast_readout(&d.film)).font(t.font(13.0)).color(t.text));
         ui.add_space(6.0);
-        control(app, ui, d, "film.presat", true);
     }
     control(app, ui, d, "film.shoulder", true);
     if color {
+        sub_title(ui, "Channel Contrast");
+        for c in ["film.gammaR", "film.gammaG", "film.gammaB"] {
+            control(app, ui, d, c, true);
+        }
         sub_title(ui, "Mask");
-        for c in ["film.baseR", "film.baseG", "film.baseB", "film.gammaR", "film.gammaG", "film.gammaB"] {
+        for c in ["film.baseR", "film.baseG", "film.baseB"] {
             control(app, ui, d, c, true);
         }
     }
     sub_title(ui, "Source");
     egui::Frame::NONE.inner_margin(egui::Margin { left: 24, right: 22, top: 0, bottom: 6 }).show(ui, |ui| {
         let t = Tokens::get(ui.ctx());
-        if color {
-            ui.label(
-                RichText::new(crate::i18n::tr("Scene balances neutrals in the picture. Film keeps the stock's own color."))
-                    .font(t.font(12.0))
-                    .color(t.text_dim),
-            );
-            ui.add_space(4.0);
-            let intents = [(lightcraft_develop::FilmIntent::Stock, "Film", "stock"), (lightcraft_develop::FilmIntent::Scene, "Scene", "scene")];
-            let items: Vec<(&str, &str)> = intents.iter().map(|(_, l, k)| (*l, *k)).collect();
-            let active = intents.iter().position(|(v, _, _)| *v == d.film.intent);
-            if let Some(i) = crate::widgets::segmented(ui, "filmIntent", &items, active, 2)
-                && intents[i].0 != d.film.intent
-            {
-                let _ = app.run("film.setIntent", json!({"intent": intents[i].0}));
-            }
-            ui.add_space(6.0);
-        }
         ui.label(RichText::new(crate::i18n::tr("Leave this on Linear unless the file is still in gamma.")).font(t.font(12.0)).color(t.text_dim));
         ui.add_space(4.0);
         let captures = [
@@ -274,7 +261,7 @@ fn more(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId, d: &DevelopSett
             }
         });
         refresh_meter(app, id, d);
-        if let Some((_, _, bins, _, _)) = app.ui.film_meter.clone()
+        if let Some((_, _, bins)) = app.ui.film_meter.clone()
             && !bins.is_empty()
         {
             ui.add_space(8.0);
@@ -331,19 +318,17 @@ fn meter_key(d: &DevelopSettings) -> u64 {
 
 fn refresh_meter(app: &mut LightcraftApp, id: PhotoId, d: &DevelopSettings) {
     let hash = meter_key(d);
-    let fresh = app.ui.film_meter.as_ref().is_some_and(|(pid, h, _, _, _)| *pid == id.0 && *h == hash);
+    let fresh = app.ui.film_meter.as_ref().is_some_and(|(pid, h, _)| *pid == id.0 && *h == hash);
     if fresh {
         return;
     }
     let Ok(v) = app.run("film.inspect", json!({})) else {
         // Remember the failure for this photo and key, so a missing file is not read every frame.
-        app.ui.film_meter = Some((id.0, hash, Vec::new(), 0.0, 0.0));
+        app.ui.film_meter = Some((id.0, hash, Vec::new()));
         return;
     };
     let bins = v.get("bins").and_then(|b| b.as_array()).map(|a| a.iter().filter_map(|n| n.as_f64().map(|x| x as f32)).collect()).unwrap_or_default();
-    let rebate = v.get("rebateLevel").and_then(|n| n.as_f64()).unwrap_or(0.0);
-    let dominant = v.get("dominant").and_then(|n| n.as_f64()).unwrap_or(0.0);
-    app.ui.film_meter = Some((id.0, hash, bins, rebate, dominant));
+    app.ui.film_meter = Some((id.0, hash, bins));
 }
 
 #[cfg(test)]

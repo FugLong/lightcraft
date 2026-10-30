@@ -245,9 +245,9 @@ pub struct UiState {
     /// Corner of the Negative Craft frame under a drag, 0..4.
     #[serde(skip)]
     pub film_corner: Option<u8>,
-    /// Density histogram for the open Negative Craft panel: photo id, settings hash, bins, rebate level, dominant fraction.
+    /// Density histogram for the open Negative Craft panel: photo id, settings hash, bins.
     #[serde(skip)]
-    pub film_meter: Option<(u64, u64, Vec<f32>, f64, f64)>,
+    pub film_meter: Option<(u64, u64, Vec<f32>)>,
     /// Guided Upright: the selected guide (photo id + index) while the tool is open. A Delete /
     /// Backspace on it removes that guide alone; a click away or leaving the tool clears it.
     #[serde(skip)]

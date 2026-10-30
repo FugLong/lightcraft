@@ -100,6 +100,12 @@ pub struct SourceInfo {
     /// Noise reduction sizes its radii in the original's pixels ([`Plan::detail_scale`]), so a
     /// preview looks like the full-size render scaled down (issue #960).
     pub native_long: Option<usize>,
+    /// The pixels are white-balanced camera RGB, before the colour matrix and its clamp.
+    /// Negative Craft measures density here.
+    pub transmission: bool,
+    /// White-balanced camera RGB → linear Rec.2020, applied to the positive after Negative Craft.
+    /// Set only when [`Self::transmission`] is set.
+    pub to_working: Option<[[f32; 3]; 3]>,
 }
 
 impl Default for SourceInfo {
@@ -116,6 +122,8 @@ impl Default for SourceInfo {
             mattes: None,
             local_tone: None,
             native_long: None,
+            transmission: false,
+            to_working: None,
         }
     }
 }

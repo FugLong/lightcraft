@@ -16,7 +16,11 @@ impl crate::Session {
         let mut job = self.build_job(id, b, b, false, true, Some(b))?;
         // (a thumbnail may develop a smaller copy of the raw image that the file keeps)
         if let SourceRef::File { reduced, .. } = &mut job.source {
-            reduced.clone_from(&self.media.reduced_loader);
+            if job.settings.film.enabled {
+                reduced.clone_from(&self.media.film_reduced_loader);
+            } else {
+                reduced.clone_from(&self.media.reduced_loader);
+            }
         }
         Some(job)
     }
@@ -37,7 +41,7 @@ impl crate::Session {
         } else {
             source_edge_needed(&p, &settings, apply_crop, max_w.max(max_h))
         });
-        let source = self.media.source_ref(&p, level);
+        let source = self.media.source_ref(&p, level, settings.film.enabled);
         let request = RenderRequest { apply_crop, ..RenderRequest::fit(max_w, max_h) };
         // the photo id is part of the key: two photos with the same settings and size must not
         // share a result (a view slot showing photo A would otherwise look current for photo B)
@@ -117,7 +121,7 @@ impl crate::Session {
         let p = self.catalog.photo(id)?.clone();
         let edge = edge.clamp(16, SourceLevel::Thumb.max_edge());
         let level = SourceLevel::Thumb;
-        let source = self.media.source_ref(&p, level);
+        let source = self.media.source_ref(&p, level, settings.film.enabled);
         let ck = Self::variant_key(&p, settings, edge);
         Some(RenderJob {
             request_id: 0,
@@ -171,7 +175,7 @@ impl crate::Session {
         // pixels along the long edge that leave `edge` across the crop
         let needed = (edge as f64 * w.max(h) / side).ceil().min(SourceLevel::Preview.max_edge() as f64);
         let level = SourceLevel::for_size(needed as usize);
-        let source = self.media.source_ref(&p, level);
+        let source = self.media.source_ref(&p, level, settings.film.enabled);
         let ck = Self::variant_key(&p, &settings, edge);
         let preview_cut = self.face_preview_cut(&p, rect, edge, needed as usize);
         Some(RenderJob {
@@ -439,13 +443,16 @@ impl crate::Session {
         };
         if reduced {
             let p = self.catalog.photo(id).ok_or("no such photo")?.clone();
-            job.source = self.media.source_ref_uncached(&p, job.level);
+            job.source = self.media.source_ref_uncached(&p, job.level, job.settings.film.enabled);
         }
         // An export is made from the denoised picture its Denoise amount asks for, made when the job runs if the
         // background queue has not got to it. (A source kept in memory may lack the picture, so the job reads the file.)
-        if let Some(wanted) = self.denoise_for_export(id, &job.settings)? {
+        // Negative Craft reads camera RGB; a working-space denoise twin is not that.
+        if !job.settings.film.enabled
+            && let Some(wanted) = self.denoise_for_export(id, &job.settings)?
+        {
             let p = self.catalog.photo(id).ok_or("no such photo")?.clone();
-            job.source = self.media.source_ref_uncached(&p, job.level);
+            job.source = self.media.source_ref_uncached(&p, job.level, false);
             if let SourceRef::File { denoise, .. } = &mut job.source {
                 *denoise = Some(wanted);
             }
@@ -464,8 +471,13 @@ impl crate::Session {
 
     /// The source proxy for pixel-statistics commands (auto tone/WB), loading synchronously.
     pub fn source_now(&mut self, id: PhotoId, level: SourceLevel) -> Result<Arc<Rgb32f>, String> {
+        self.source_now_for(id, level, false)
+    }
+
+    /// [`Self::source_now`]. `for_film` loads white-balanced camera RGB when a film loader is installed.
+    pub fn source_now_for(&mut self, id: PhotoId, level: SourceLevel, for_film: bool) -> Result<Arc<Rgb32f>, String> {
         let p = self.catalog.photo(id).ok_or("no such photo")?.clone();
-        let r = self.media.source_ref(&p, level).load_source()?;
+        let r = self.media.source_ref(&p, level, for_film).load_source()?;
         let image = r.image.clone();
         if let Some(info) = &r.info {
             self.learn_as_shot_wb(id, info);

@@ -63,8 +63,12 @@ pub struct MediaCache {
     /// share of [`crate::memory::budget`]); the least recently used entry of any of them goes first.
     budget: usize,
     pub file_loader: Option<FileLoader>,
+    /// White-balanced camera RGB for Negative Craft. `None`: film renders use [`Self::file_loader`].
+    pub film_loader: Option<FileLoader>,
     /// What grid thumbnails load files with (see [`ReducedLoader`]); `None`: [`Self::file_loader`].
     pub reduced_loader: Option<ReducedLoader>,
+    /// [`Self::reduced_loader`] for Negative Craft thumbnails.
+    pub film_reduced_loader: Option<ReducedLoader>,
     pub file_probe: Option<FileProbe>,
     pub preview_loader: Option<PreviewLoader>,
     /// Reads a photo file's bytes (Photo Merge); `None` = the local file system.

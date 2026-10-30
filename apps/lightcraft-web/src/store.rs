@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use lightcraft_engine::files::{load_bytes, probe_bytes};
+use lightcraft_engine::files::{load_bytes, load_bytes_transmission, probe_bytes};
 use lightcraft_engine::media::{FileLoader, FileProbe};
 
 /// Prefix of the catalog paths of files kept in browser storage.
@@ -160,6 +160,11 @@ impl Originals {
     pub fn install(&self, session: &mut lightcraft_engine::Session) {
         let (l, p) = self.hooks();
         session.media.file_loader = Some(l);
+        let s = self.clone();
+        session.media.film_loader = Some(Arc::new(move |path: &str, max_edge: usize| {
+            let bytes = s.get(path).ok_or_else(|| format!("{path}: the original is still loading from browser storage"))?;
+            load_bytes_transmission(&bytes, max_edge)
+        }));
         session.media.file_probe = Some(p);
         let s = self.clone();
         session.media.preview_loader =

@@ -99,7 +99,7 @@ fn decoder_info_survives_render_jobs_cache_and_eviction() {
     let expected = lightcraft_pipeline::render(&r.loaded.as_ref().unwrap().image, &info, &job.settings, &job.request);
     assert_eq!(r.rendered.as_ref().unwrap().image.data, expected.image.data);
     s.accept(&r);
-    job.source = s.media.source_ref(s.catalog.photo(id).unwrap(), job.level);
+    job.source = s.media.source_ref(s.catalog.photo(id).unwrap(), job.level, false);
     let again = job.run();
     assert!(again.loaded.is_none());
     assert_eq!(r.rendered.unwrap().image.data, again.rendered.unwrap().image.data);

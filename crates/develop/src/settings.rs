@@ -1233,27 +1233,6 @@ impl FilmStock {
     }
 }
 
-/// How automatic color is chosen. Stock keeps a roll's color and leaves a sunset yellow.
-/// Scene looks for neutrals in this frame.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum FilmIntent {
-    #[default]
-    Stock,
-    Scene,
-}
-
-impl FilmIntent {
-    pub const ALL: [FilmIntent; 2] = [FilmIntent::Stock, FilmIntent::Scene];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            FilmIntent::Stock => "Stock",
-            FilmIntent::Scene => "Scene",
-        }
-    }
-}
-
 /// How the file stores transmission. Linear is a raw or a linear TIFF. The gamma values
 /// linearize a flatbed scan before density is measured.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -1270,9 +1249,10 @@ pub enum FilmCapture {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum FilmScan {
-    #[default]
     Camera,
     Minilab,
+    /// JPEG / working-space default. Camera Hanson without a gray axis tints those files.
+    #[default]
     Flat,
 }
 
@@ -1288,8 +1268,9 @@ impl FilmScan {
     }
 
     /// Residual side absorption `(cyan in green, magenta in blue, cyan in blue)`, removed with
-    /// Hanson's inverse. A typical wide-filter residual, not a measured stock. Zero leaves
-    /// integral density alone. An equal-density neutral moves; the gray axis puts it back.
+    /// Hanson's inverse. Camera is for a raw in camera RGB. Minilab is a dedicated scanner.
+    /// Flat is a JPEG or a working-space TIFF: Convert does not gray-world, so Camera Hanson
+    /// there tints every print. Zero leaves integral density alone.
     pub fn dye(self) -> [f64; 3] {
         match self {
             FilmScan::Camera => [0.12, 0.22, 0.06],
@@ -1375,20 +1356,28 @@ impl FilmFrame {
     }
 }
 
-/// Negative Craft settings. Zero on temperature, tint, and the band balances means the mask
-/// has been removed and no cast has been added. Exposure and blacks place the print. Contrast
-/// (`grade`) changes the film gamma on a negative and holds the middle still; on a slide it is a
-/// power. A shoulder, when set, rolls off highlights. They can sit at identity.
+/// Negative Craft settings.
+///
+/// On a negative, density above the base is straightened onto the gray axis
+/// (`(D − fog) / axis`), then printed: scene light is `10^(grade · (D − pivot) / 0.6)` with the
+/// black anchor `d_lo` subtracted, so `d_lo` prints black and `pivot` prints middle gray.
+/// Exposure (stops) and blacks (scene-linear lift) follow. Convert writes the base, the axis,
+/// `d_lo`, `pivot`, `d_hi`, and `grade`; the looks (temperature, tint, the band balances, presat,
+/// shoulder, blacks) are on top and zero leaves the print as measured. On a slide `grade` is a
+/// power on the positive.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Film {
     pub enabled: bool,
     pub stock: FilmStock,
-    pub intent: FilmIntent,
     pub capture: FilmCapture,
-    /// Sensor or scanner that recorded the negative. Changes the dye correction, then Auto
-    /// rebalances so gray stays gray.
+    /// Sensor or scanner that recorded the negative. Camera Hanson is for camera RGB.
+    /// Convert does not gray-world: a JPEG stays Flat.
     pub scan: FilmScan,
+    /// The user chose [`Self::scan`]. An unpicked Flat on camera RGB is the old default, and
+    /// Convert moves it to Camera; a picked Flat or Minilab stays.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub scan_picked: bool,
     /// Paper the balanced negative is printed on. Applied after the gray axis, so a look's
     /// temperature is a trim on top of this and not the thing that removes the mask.
     pub print: FilmPrint,
@@ -1398,30 +1387,31 @@ pub struct Film {
     /// Omitted from a catalog while it is zero.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub inset: f64,
+    /// Transmission of clear film, per channel.
     pub base_r: f64,
     pub base_g: f64,
     pub base_b: f64,
+    /// Per-channel contrast trims. On a negative, a slope on straightened density about the
+    /// middle, so the middle stays gray while that channel's shadows and highlights move
+    /// apart; on a slide, a power. Applied after the measurement, which never reads them.
+    /// Convert resets them to 1.
     pub gamma_r: f64,
     pub gamma_g: f64,
     pub gamma_b: f64,
+    /// Stops on top of the measured print.
     pub exposure: f64,
+    /// Print contrast on a negative: the log slope of the print, 1 being the film's own 0.6.
     pub grade: f64,
-    /// Straightened density the contrast slider holds still. Zero disables the hold.
-    #[serde(default, skip_serializing_if = "is_zero")]
+    /// Straightened density printed at middle gray. Until Convert measures it, a typical middle.
     pub pivot: f64,
-    /// Scene light of [`Self::pivot`] at the grade exposure was solved for, before exposure.
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub anchor: f64,
+    /// Scene-linear lift (or, below zero, crush) of the black.
     pub black: f64,
     pub shoulder: f64,
-    /// Density lifted off the shadows once Auto has set a white, so a picture that never
-    /// reaches clear film can print black. Zero keeps the film border as the only black.
-    /// While the white is still unset this is the shared black point.
+    /// Straightened density printed black.
     pub d_lo: f64,
-    /// Density of the bright end. The curve uses the brightest channel of [`Self::white`].
+    /// Straightened density of the picture's bright end (its 99th percentile), as Convert measured it.
     pub d_hi: f64,
-    /// Intercept of the gray axis, `D_c = fog_c + axis_c * D_green`. Zero until Auto.
-    /// Never negative, so the mask stays black.
+    /// Offset of the gray axis, `D_c = fog_c + axis_c * D_green`. Zero until Convert.
     pub fog_r: f64,
     pub fog_g: f64,
     pub fog_b: f64,
@@ -1433,14 +1423,11 @@ pub struct Film {
     pub axis_g: f64,
     #[serde(default = "one_f64")]
     pub axis_b: f64,
-    /// OkLab is not used here. These are CIE a* and b* of the printed midtone, written by Auto.
+    /// CIE a* and b* of the printed midtone, written by Convert for the cast readout.
     pub mid_a: f64,
     pub mid_b: f64,
-    /// Per-channel density that prints white. All zero means "use `d_hi` for every channel".
-    /// Auto keeps these near `d_hi`, shifted by the bright end's channel offsets, so that end is neutral.
-    pub white_r: f64,
-    pub white_g: f64,
-    pub white_b: f64,
+    /// Saturation of the print, −100…100, about each colour's own luminance: neutrals and
+    /// brightness are unchanged, and no colour is pushed out of gamut.
     pub presat: f64,
     pub temp: f64,
     pub tint: f64,
@@ -1450,10 +1437,12 @@ pub struct Film {
     pub mid_tint: f64,
     pub high_temp: f64,
     pub high_tint: f64,
-    /// Sampled transmission of a shadow neutral, kept so a later base change can be rebalanced.
+    /// Linear transmission of picked neutrals. While any is set, the gray axis runs through them
+    /// (offsets with one, offsets and slopes with more) and a re-measure keeps it there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shadow_pick: Option<[f64; 3]>,
-    /// Sampled transmission of a highlight neutral.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gray_pick: Option<[f64; 3]>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub highlight_pick: Option<[f64; 3]>,
 }
@@ -1463,9 +1452,9 @@ impl Default for Film {
         Self {
             enabled: false,
             stock: FilmStock::ColorNeg,
-            intent: FilmIntent::Stock,
             capture: FilmCapture::Linear,
-            scan: FilmScan::Camera,
+            scan: FilmScan::Flat,
+            scan_picked: false,
             print: FilmPrint::Neutral,
             frame: FilmFrame::default(),
             inset: 0.0,
@@ -1477,8 +1466,7 @@ impl Default for Film {
             gamma_b: 1.0,
             exposure: 0.0,
             grade: 1.0,
-            pivot: 0.0,
-            anchor: 0.0,
+            pivot: 0.5,
             black: 0.0,
             shoulder: 0.0,
             d_lo: 0.0,
@@ -1491,9 +1479,6 @@ impl Default for Film {
             axis_b: 1.0,
             mid_a: 0.0,
             mid_b: 0.0,
-            white_r: 0.0,
-            white_g: 0.0,
-            white_b: 0.0,
             presat: 0.0,
             temp: 0.0,
             tint: 0.0,
@@ -1504,6 +1489,7 @@ impl Default for Film {
             high_temp: 0.0,
             high_tint: 0.0,
             shadow_pick: None,
+            gray_pick: None,
             highlight_pick: None,
         }
     }
@@ -1554,18 +1540,27 @@ impl Film {
         self.axis_b = a[2];
     }
 
-    pub fn white(&self) -> [f64; 3] {
-        [self.white_r, self.white_g, self.white_b]
+    /// The neutral picks that are set.
+    pub fn picks(&self) -> Vec<[f64; 3]> {
+        [self.shadow_pick, self.gray_pick, self.highlight_pick].into_iter().flatten().collect()
     }
 
-    pub fn set_white(&mut self, w: [f64; 3]) {
-        self.white_r = w[0];
-        self.white_g = w[1];
-        self.white_b = w[2];
+    pub fn clear_picks(&mut self) {
+        self.shadow_pick = None;
+        self.gray_pick = None;
+        self.highlight_pick = None;
     }
+}
 
-    /// True when Auto has not yet set a per-channel white, so the print uses `d_lo` and `d_hi`.
-    pub fn shared_endpoints(&self) -> bool {
-        self.white_r == 0.0 && self.white_g == 0.0 && self.white_b == 0.0
+#[cfg(test)]
+mod tests {
+    use super::Film;
+
+    /// Stock and Scene used to be a setting. Both printed the same way, so the field is gone.
+    /// An older catalog that still names it has to open.
+    #[test]
+    fn an_older_catalog_intent_still_loads() {
+        let film: Film = serde_json::from_str(r#"{"intent":"stock","enabled":true}"#).expect("catalog");
+        assert!(film.enabled);
     }
 }

@@ -23,9 +23,11 @@ pub use colour::bin_factor;
 pub(crate) use colour::clipped_white;
 #[cfg(test)]
 use fs::quick_image_srgb;
-pub use fs::{fs_hooks, fs_pair_loader, fs_reduced_loader};
+pub use fs::{fs_film_loader, fs_film_reduced_loader, fs_hooks, fs_pair_loader, fs_reduced_loader};
 pub(crate) use load::{DngWhite, WbScaleOf, dng_tone_curve};
-pub use load::{load_bytes, load_vec, load_vec_pair, load_vec_reduced};
+pub use load::{
+    load_bytes, load_bytes_transmission, load_vec, load_vec_pair, load_vec_reduced, load_vec_reduced_transmission, load_vec_transmission,
+};
 #[cfg(test)]
 use preview::PLAN_PREFIX;
 pub(crate) use preview::decode_raw_preview;
@@ -88,6 +90,19 @@ impl CameraColourModel<'_> {
             return;
         }
         img.map_in_place(|p| self.pixel(&m, p));
+    }
+
+    /// White balance and baseline exposure only: linear camera RGB, before the colour matrix.
+    /// Negative Craft measures density here. Sensor values below zero are noise and clamp; the
+    /// orange mask is still positive in this space.
+    pub fn transmission(&self, img: &mut Rgb32f) {
+        let (wb, gain) = (self.wb, self.gain);
+        img.map_in_place(|p| {
+            [p[0] * wb[0], p[1] * wb[1], p[2] * wb[2]].map(|v| {
+                let v = v * gain;
+                if v.is_finite() { v.max(0.0) } else { 0.0 }
+            })
+        });
     }
 
     /// [`Self::apply`] to one pixel; `m` is the matrix as `f32`.

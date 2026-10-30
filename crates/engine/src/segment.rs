@@ -427,7 +427,7 @@ impl Session {
                 let mut job = self.preview_job(id, INPUT_EDGE, INPUT_EDGE, true, &d).ok_or("no such photo")?;
                 let frac = (region[2] - region[0]).max(region[3] - region[1]).max(0.01);
                 job.level = crate::media::SourceLevel::for_size((INPUT_EDGE as f64 / frac) as usize);
-                job.source = self.media.source_ref(&p, job.level);
+                job.source = self.media.source_ref(&p, job.level, false);
                 job
             }
         };

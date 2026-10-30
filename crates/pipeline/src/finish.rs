@@ -268,6 +268,11 @@ impl FinishParams {
 /// lifts its highlights past white ([`ToneMap::camera_hdr`]), so it matches the SDR render below them.
 pub fn base_tone(s: &DevelopSettings, info: &SourceInfo, peak: f32) -> ToneMap {
     let l = &s.light;
+    // A converted negative is scene light whatever the scan was saved as, and the camera's
+    // curve was made for the scene it photographed, not for the print.
+    if s.film.enabled && s.film.stock.negative() {
+        return ToneMap::hdr(l.contrast, l.whites, l.blacks, peak);
+    }
     match s.process.process() {
         // V2 changes the Highlights/Shadows base (`local::tone_base`), not the tone map
         Process::V1 | Process::V2 => match info.camera_tone.as_ref().filter(|_| info.raw) {

@@ -21,11 +21,11 @@ Leave a strip of blank film in the scan. Open the photo in **Edit**, turn on **N
 2. Open **Window**, then **Edit Sections**, then **Negative Craft**. The section appears above **Light** and stays there on later photos. Choose that menu item again, or right-click the **Negative Craft** header and choose **Hide Negative Craft**, to put it away.
 3. Choose **Color Neg** or **B&W**.
 4. Click **Convert**. The swatch is the blank film LightCraft measured. When the edge has no blank film, LightCraft says so and keeps the previous border.
-5. If the frame still includes blank film or a dark edge around the picture, raise **Margin**. The number is the percent taken off each edge before the picture is measured again. The swatch stays the blank film. Cropping the photo does not change this measurement.
-6. If the swatch is wrong, click **Border**, then click the blank film. A pale border works. A border the highlight warning marked is clipped: scan that frame again with less exposure.
+5. If the frame still includes blank film or a dark edge around the picture, raise **Margin**. The number is the percent taken off each edge before the picture is measured again. The swatch, **Exposure** and **Contrast** stay where they were. Cropping the photo does not change this measurement.
+6. If the swatch is wrong, click **Border**, then click the orange blank film. A pale border, the holder, and a border the highlight warning marked are refused: scan that frame again so the border stays orange and unclipped.
 7. Under **Crop**, click **Auto**. If the edge is wrong, click **Adjust** and drag the crop.
-8. On a color negative, click **Gray** and click a tone that should print gray when one tone is still off.
-9. **Convert** sets **Contrast** so the picture fills the print. Move **Contrast** to change the slope; the middle stays put. **Exposure** brightens or darkens. **Blacks** lifts or drops the shadow. On a color negative, use **Temp** and **Tint**, then the shadow, midtone and highlight pairs, to finish the color. A black-and-white negative finishes with **Exposure**, **Contrast** and **Blacks**.
+8. On a color negative, when a tone that should be gray is still off, click **Gray** and click it. **Shadow** and **Highlight** under **More** add a dark and a light gray; together the clicks set the color balance from dark to light.
+9. **Convert** sets **Contrast** from the picture. It is the paper grade: 1 leaves the film as it was recorded, higher is a harder paper, lower is a softer one. The middle stays put. **Exposure** brightens or darkens. **Blacks** lifts or drops the shadow. On a color negative, **Saturation** strengthens or mutes color without changing brightness. Use **Temp** and **Tint**, then the shadow, midtone and highlight pairs, to finish the color. A black-and-white negative finishes with **Exposure**, **Contrast** and **Blacks**.
 10. On a color negative, under **Look**, choose **Neutral**, **Warm**, **Cool**, **Paper** or **Cinematic**. A look changes the color and the paper. It leaves the border, the gray, the exposure and the contrast alone.
 
 ## Scan and paper
@@ -39,7 +39,8 @@ Select the frames. Open **More** and click **Match roll**. Each frame needs its 
 ## Good to know
 
 - A raw scan holds the mask more faithfully than a JPEG of the same negative.
-- Dust and grain on the blank film do not change the color. Border measures that film as a whole, so a click on the holder, on a speck, or a few pixels into the picture is the same base and the same exposure. A black film holder around the rebate is skipped. A picture that is almost as orange as the rebate does not change the base either. When a large part of the picture is thinner than that film, the black point follows the clear part of the picture, so those shadows stay a tone instead of a flat black full of dots. A pure-white border, or a scan with no blank film, still has to be scanned again.
+- Dust and grain on the blank film do not change the color: **Border** reads a small patch where you click, and on a color negative that patch has to be orange. A black film holder around the rebate is skipped. A picture that is almost as orange as the rebate does not change the base either. When a large part of the picture is thinner than that film, the black point follows the clear part of the picture, so those shadows stay a tone instead of a flat black full of dots. A pure-white border, or a scan with no blank film, still has to be scanned again.
 - **Auto** in Light, white balance, and **Auto** black-and-white mix read the print, so they do not balance the orange mask.
 - In **More**, leave the scan gamma on **Linear** unless the file is still stored with gamma 1.8 or 2.2.
-- **More** also holds **Saturation**, **Shoulder**, the mask numbers, and **Shadow** and **Highlight** picks for a dark neutral and a light one.
+- **More** also holds **Shoulder**, **Channel Contrast** for one color's contrast (the middle gray stays put), the **Mask** numbers, and the **Shadow** and **Highlight** picks.
+- Clicking **Convert** again sets **Exposure** and **Contrast** from the picture, clears the gray clicks, and puts **Channel Contrast** back to 1.

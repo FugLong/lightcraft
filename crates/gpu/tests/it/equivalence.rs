@@ -907,7 +907,9 @@ fn negative_craft_matches_the_cpu() {
             } else if x == 40 && y == 30 {
                 [0.20, 0.10, -0.05]
             } else {
-                [0.35, 0.22, 0.12]
+                // A ramp from thin to dense, so the whole print curve is compared.
+                let k = 1.0 - 0.9 * x as f32 / 96.0;
+                [0.80 * k, 0.40 * k.powf(1.1), 0.14 * k.powf(1.2)]
             };
             data.push(px);
         }
@@ -924,6 +926,8 @@ fn negative_craft_matches_the_cpu() {
             base_b: 0.15,
             grade: 1.1,
             exposure: 0.25,
+            pivot: 0.45,
+            d_lo: 0.05,
             ..Default::default()
         };
         extra(&mut film);
@@ -941,9 +945,10 @@ fn negative_craft_matches_the_cpu() {
                 f.presat = 30.0;
                 f.fog_b = 0.04;
                 f.axis_b = 1.15;
-                f.white_r = 0.9;
-                f.white_g = 1.0;
-                f.white_b = 1.2;
+                f.fog_r = -0.03;
+                f.axis_r = 0.9;
+                f.mid_a = 3.0;
+                f.mid_b = -2.0;
             }),
             SourceInfo::default(),
         ),
@@ -952,12 +957,16 @@ fn negative_craft_matches_the_cpu() {
             "negative craft contrast pivot",
             film(FilmStock::ColorNeg, FilmCapture::Linear, |f| {
                 f.grade = 1.8;
-                f.white_r = 0.9;
-                f.white_g = 1.0;
-                f.white_b = 1.05;
                 f.d_lo = 0.12;
                 f.pivot = 0.35;
-                f.anchor = 0.08;
+                f.black = 0.02;
+                f.gamma_r = 0.9;
+                f.gamma_b = 1.15;
+                f.temp = 30.0;
+                f.shadow_tint = -20.0;
+                f.high_temp = 15.0;
+                f.print = lightcraft_develop::FilmPrint::Portrait;
+                f.presat = 45.0;
             }),
             SourceInfo::default(),
         ),

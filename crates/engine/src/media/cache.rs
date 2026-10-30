@@ -61,7 +61,9 @@ impl Default for MediaCache {
             preview_capacity: 0,
             budget,
             file_loader: None,
+            film_loader: None,
             reduced_loader: None,
+            film_reduced_loader: None,
             file_probe: None,
             preview_loader: None,
             file_bytes: None,
@@ -72,6 +74,15 @@ impl Default for MediaCache {
             denoise: DenoiseIndex::default(),
         }
     }
+}
+
+/// A working-space raw does not serve Negative Craft, and camera RGB does not serve an ordinary photo.
+/// A JPEG, a demo insert (`info` absent) and a transmission decode serve film.
+fn source_serves(src: &DecodedSource, for_film: bool) -> bool {
+    let info = src.info.as_ref();
+    let transmission = info.is_some_and(|i| i.transmission);
+    let raw_render = info.is_some_and(|i| i.raw && !i.transmission);
+    if for_film { !raw_render } else { !transmission }
 }
 
 /// Memory for rendered previews out of the cache share.
@@ -285,35 +296,48 @@ impl MediaCache {
     }
 
     /// How to load photo `p` at `level`: from the cache when its source is there, else from its file (with its denoised
-    /// picture beside it when it has one), its smart preview or the demo scene.
-    pub fn source_ref(&mut self, p: &Photo, level: SourceLevel) -> SourceRef {
-        self.source_ref_with(p, level, true)
+    /// picture beside it when it has one), its smart preview or the demo scene. `for_film` asks for
+    /// white-balanced camera RGB. A cached working-space raw does not serve that, and camera RGB
+    /// does not serve an ordinary photo.
+    pub fn source_ref(&mut self, p: &Photo, level: SourceLevel, for_film: bool) -> SourceRef {
+        self.source_ref_with(p, level, true, for_film)
     }
 
     /// [`Self::source_ref`] that never takes a decoded source from memory: for a job that needs something the cached
     /// one lacks (an export, whose denoised picture is made when it runs).
-    pub fn source_ref_uncached(&mut self, p: &Photo, level: SourceLevel) -> SourceRef {
-        self.source_ref_with(p, level, false)
+    pub fn source_ref_uncached(&mut self, p: &Photo, level: SourceLevel, for_film: bool) -> SourceRef {
+        self.source_ref_with(p, level, false, for_film)
     }
 
-    fn source_ref_with(&mut self, p: &Photo, level: SourceLevel, cached: bool) -> SourceRef {
-        let mut r = self.source_ref_plain(p, level, cached);
-        if let (SourceRef::File { denoise, .. }, Some((spec, loader))) = (&mut r, self.denoise.get(p.id)) {
+    fn source_ref_with(&mut self, p: &Photo, level: SourceLevel, cached: bool, for_film: bool) -> SourceRef {
+        let mut r = self.source_ref_plain(p, level, cached, for_film);
+        if for_film {
+            if let SourceRef::File { loader, .. } = &mut r
+                && self.film_loader.is_some()
+            {
+                loader.clone_from(&self.film_loader);
+            }
+        } else if let (SourceRef::File { denoise, .. }, Some((spec, loader))) = (&mut r, self.denoise.get(p.id)) {
             *denoise = Some((spec.clone(), loader.clone()));
         }
         r
     }
 
-    fn source_ref_plain(&mut self, p: &Photo, level: SourceLevel, cached: bool) -> SourceRef {
-        if cached && let Some(a) = self.get_source(p.id, level) {
+    fn source_ref_plain(&mut self, p: &Photo, level: SourceLevel, cached: bool, for_film: bool) -> SourceRef {
+        if cached
+            && let Some(a) = self.get_source(p.id, level)
+            && source_serves(&a, for_film)
+        {
             return SourceRef::Loaded(Box::new(a));
         }
         // a thumbnail of a photo whose preview is decoded (the one in the loupe) is cut from it; not
-        // with a denoised picture, which the thumbnail would lose
+        // with a denoised picture, which the thumbnail would lose. Film has no denoised twin.
+        let fit_ok = for_film || self.denoise.spec(p.id).is_none();
         if cached
             && level == SourceLevel::Thumb
-            && self.denoise.spec(p.id).is_none()
+            && fit_ok
             && let Some(big) = self.get_source(p.id, SourceLevel::Preview)
+            && source_serves(&big, for_film)
         {
             return SourceRef::Fit { from: Box::new(big), max_edge: level.max_edge() };
         }

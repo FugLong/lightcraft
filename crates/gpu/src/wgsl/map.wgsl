@@ -115,7 +115,8 @@ fn xguided_apply(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workg
     dst[i] = max(c[i], clamp(b[2u * i] * a[i] + b[2u * i + 1u], 0.0, 1.0));
 }
 
-// White balance: 3×3 matrix (P[1] = has matrix, P[2..11] row-major), clamped at 0.
+// White balance: 3×3 matrix (P[1] = has matrix, P[2..10] row-major). P[11] = 0 keeps negatives
+// (the orange mask in a working space); any other value clamps at 0.
 @compute @workgroup_size(256)
 fn wb_k(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) nw: vec3<u32>) {
     let i = lin_index(g, nw);
@@ -130,13 +131,48 @@ fn wb_k(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) nw
             pf(8u) * c.x + pf(9u) * c.y + pf(10u) * c.z,
         );
     }
-    put_rgb(i, max(c * 1.0, vec3<f32>(0.0)));
+    if (pu(11u) != 0u) {
+        c = max(c, vec3<f32>(0.0));
+    }
+    put_rgb(i, c);
 }
 
 // Negative Craft (`lightcraft_pipeline::film::FilmKernel::apply`). P[1..] is `FilmKernel::words`:
-// base, gamma, presat, slope, power (film gamma on a negative, grade on a slide), offset, shoulder,
-// balance, shadow, mid, high, flags, capture, fog.g, white.g, fog.rgb, white.rgb, dye.rgb, aim.rgb,
-// chroma, axis.rgb, lift, pivot, anchor.
+// base 1–3, trim 4–6, flags 7 (1 negative, 2 mono), capture 8, dye 9–17 (row-major), fog 18–20,
+// axis 21–23, contrast 24 (negative slope and slide power), mid 25, black 26, gain 27, offset 28,
+// aim 29–31, chroma 32, balance 33–35, shadow 36–38, midtone 39–41, high 42–44, shoulder 45.
+fn film_light(x: f32, slope: f32, mid: f32) -> f32 {
+    return pow(10.0, clamp(slope * (x - mid), -12.0, 8.0));
+}
+
+// `FilmKernel::print` on each channel: scene light of a straightened density.
+fn film_print(s: vec3<f32>) -> vec3<f32> {
+    let slope = pf(24u) / 0.6;
+    let mid = pf(25u);
+    let floor = film_light(pf(26u), slope, mid);
+    let light = vec3<f32>(film_light(s.x, slope, mid), film_light(s.y, slope, mid), film_light(s.z, slope, mid));
+    let v = GREY * (light - vec3<f32>(floor)) / max(1.0 - floor, 1e-6);
+    // `toe`: below TOE the black rolls off exponentially.
+    let toe = 0.002;
+    let rolled = toe * exp(max((v - vec3<f32>(toe)) / toe, vec3<f32>(-60.0)));
+    return min(select(rolled, v, v >= vec3<f32>(toe)), vec3<f32>(64.0));
+}
+
+// `kernel::saturate`: scale the distance from luminance, no further than a channel reaching zero.
+fn film_saturate(c: vec3<f32>, k: f32) -> vec3<f32> {
+    if (abs(k - 1.0) <= 1e-4) {
+        return c;
+    }
+    let y = lum2020(c);
+    var room = k;
+    for (var j = 0u; j < 3u; j++) {
+        if (c[j] < y) {
+            room = min(room, y / (y - c[j]));
+        }
+    }
+    return max(vec3<f32>(y) + (c - vec3<f32>(y)) * room, vec3<f32>(0.0));
+}
+
 @compute @workgroup_size(256)
 fn film_k(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) nw: vec3<u32>) {
     let i = lin_index(g, nw);
@@ -144,112 +180,66 @@ fn film_k(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) 
         return;
     }
     var t = rgb_a(i);
-    // `FilmKernel::apply`: non-finite or negative transmission is 0 (NaN fails `t >= 0`).
+    // `capture_channel`: non-finite or negative transmission is 0 (NaN fails `t >= 0`).
     t = select(vec3<f32>(0.0), t, t >= vec3<f32>(0.0) & t < vec3<f32>(3.0e38));
-    let capture = pf(25u);
-    let presat = pf(7u);
+    let capture = pf(8u);
     if (capture > 1.001) {
         t = pow(t, vec3<f32>(capture));
     }
-    if (abs(presat - 1.0) > 1e-6) {
-        let y = (t.x + t.y + t.z) / 3.0;
-        t = max(vec3<f32>(y) + (t - vec3<f32>(y)) * presat, vec3<f32>(0.0));
-    }
     var base = vec3<f32>(pf(1u), pf(2u), pf(3u));
-    var gamma = vec3<f32>(pf(4u), pf(5u), pf(6u));
-    let flags = pu(24u);
+    let trim = vec3<f32>(pf(4u), pf(5u), pf(6u));
+    let flags = pu(7u);
     if ((flags & 2u) != 0u) {
-        let y = lum2020(t);
-        t = vec3<f32>(y);
-        let b = max(lum2020(base), 1e-4);
-        base = vec3<f32>(b);
-        gamma = vec3<f32>(max(gamma.y, 0.05));
-    } else {
-        base = max(base, vec3<f32>(1e-4));
-        gamma = max(gamma, vec3<f32>(0.05));
+        t = vec3<f32>(lum2020(t));
+        base = vec3<f32>(max(lum2020(base), 1e-4));
     }
-    let n = max(t / base, vec3<f32>(1e-6));
+    let eps = 1e-6;
+    let gain = pf(27u);
+    let offset = pf(28u);
+    let chroma = pf(32u);
     var scene: vec3<f32>;
     if ((flags & 1u) != 0u) {
-        // `printing_density` and the gray axis in `lightcraft_pipeline::film`.
-        var d = min(max(-log(min(n, vec3<f32>(1e6))) / log(10.0), vec3<f32>(0.0)) * gamma, vec3<f32>(4.0));
-        let cg = pf(34u);
-        let mb = pf(35u);
-        let cb = pf(36u);
-        if (cg != 0.0 || mb != 0.0 || cb != 0.0) {
-            // Hanson: C = Dr, M = Dg − cg·C, Y = Db − cb·C − mb·M.
-            let c = d.x;
-            let m = max(d.y - cg * c, 0.0);
-            let y = max(d.z - cb * c - mb * m, 0.0);
-            d = vec3<f32>(c, m, y);
-        }
-        let fog = vec3<f32>(pf(28u), pf(29u), pf(30u));
-        let white = vec3<f32>(pf(31u), pf(32u), pf(33u));
-        let axis = max(vec3<f32>(pf(41u), pf(42u), pf(43u)), vec3<f32>(0.05));
-        var straight = max(d - fog, vec3<f32>(0.0)) / axis;
-        let lift = max(pf(44u), 0.0);
-        if (lift > 1e-4) {
-            straight = max(straight - vec3<f32>(lift), vec3<f32>(0.0));
-        }
-        // pf(9) is the film gamma on a negative (FILM_GAMMA / grade). The brightest channel
-        // is the curve white. A near-neutral bright end is gained so each channel's white
-        // density prints at 1, fading in toward that end. Equal whites leave the gain at 1.
-        // Mono skips it. Density above the white stays above 1.
-        let gam = max(pf(9u), 0.05);
-        let curve = max(max(max(white.x, white.y), white.z), 0.05);
-        let scale = max(pow(10.0, min(curve / gam, 8.0)) - 1.0, 1e-4);
-        let e = min(straight / gam, vec3<f32>(8.0));
-        scene = min((pow(vec3<f32>(10.0), e) - vec3<f32>(1.0)) / scale, vec3<f32>(64.0));
-        if ((flags & 2u) == 0u) {
-            let straight_y = 0.2627 * straight.x + 0.6780 * straight.y + 0.0593 * straight.z;
-            let t = sstep(curve * 0.62, curve * 0.92, straight_y);
-            let channel = max(clamp(white, vec3<f32>(curve - 0.45), vec3<f32>(curve)), vec3<f32>(0.05));
-            let at_e = min(channel / gam, vec3<f32>(8.0));
-            let at = max((pow(vec3<f32>(10.0), at_e) - vec3<f32>(1.0)) / scale, vec3<f32>(1e-4));
-            scene = min(scene * (vec3<f32>(1.0) + (vec3<f32>(1.0) / at - vec3<f32>(1.0)) * t), vec3<f32>(64.0));
-        }
-        scene = scene * vec3<f32>(pf(37u), pf(38u), pf(39u));
-        let chroma = pf(40u);
-        if (abs(chroma - 1.0) > 1e-4) {
-            let y = (scene.x + scene.y + scene.z) / 3.0;
-            scene = max(vec3<f32>(y) + (scene - vec3<f32>(y)) * chroma, vec3<f32>(0.0));
-        }
-        // Hold the middle: `anchor` is this pivot's scene light at the grade exposure was solved for.
-        let pivot = pf(45u);
-        let anchor = pf(46u);
-        if (pivot > 1e-4 && anchor > 1e-5) {
-            let now_e = min(pivot / gam, 8.0);
-            let now = max((pow(10.0, now_e) - 1.0) / scale, 1e-5);
-            scene = scene * clamp(anchor / now, 0.02, 64.0);
-        }
+        // `density`, the dye matrix, the gray axis, and the channel trims about the middle.
+        let raw = log(max(base, vec3<f32>(eps)) / max(t, vec3<f32>(eps))) / log(10.0);
+        let d0 = clamp(raw, vec3<f32>(-1.0), vec3<f32>(5.0));
+        // Hanson inverse, then a physical dye amount (not negative).
+        let d = max(vec3<f32>(
+            dot(vec3<f32>(pf(9u), pf(10u), pf(11u)), d0),
+            dot(vec3<f32>(pf(12u), pf(13u), pf(14u)), d0),
+            dot(vec3<f32>(pf(15u), pf(16u), pf(17u)), d0),
+        ), vec3<f32>(0.0));
+        let fog = vec3<f32>(pf(18u), pf(19u), pf(20u));
+        let axis = vec3<f32>(pf(21u), pf(22u), pf(23u));
+        let mid = vec3<f32>(pf(25u));
+        let s = (d - fog) / axis;
+        scene = film_print(mid + trim * (s - mid)) * vec3<f32>(pf(29u), pf(30u), pf(31u));
+        scene = film_saturate(scene, chroma) * gain + vec3<f32>(offset);
     } else {
-        scene = pow(n, gamma);
+        scene = max(pow(max(t / base, vec3<f32>(eps)), trim) * gain + vec3<f32>(offset), vec3<f32>(0.0));
+        let power = pf(24u);
+        if (abs(power - 1.0) > 1e-4) {
+            scene = pow(scene, vec3<f32>(power));
+        }
+        scene = film_saturate(scene, chroma);
     }
-    let slope = pf(8u);
-    let power = pf(9u);
-    let offset = pf(10u);
-    let shoulder = pf(11u);
-    var v = max(scene * slope + vec3<f32>(offset), vec3<f32>(0.0));
-    // Slide contrast. A negative's contrast is the film gamma above.
-    if ((flags & 1u) == 0u && abs(power - 1.0) > 1e-4) {
-        v = pow(max(v, vec3<f32>(0.0)), vec3<f32>(power));
-    }
-    let y = lum2020(v);
-    let sh = 1.0 - sstep(0.02, 0.35, y);
-    let hi = sstep(0.55, 0.95, y);
-    let mid = max(1.0 - sh - hi, 0.0);
-    let balance = vec3<f32>(pf(12u), pf(13u), pf(14u));
-    let shadow = vec3<f32>(pf(15u), pf(16u), pf(17u));
-    let midg = vec3<f32>(pf(18u), pf(19u), pf(20u));
-    let high = vec3<f32>(pf(21u), pf(22u), pf(23u));
-    let band = shadow * sh + midg * mid + high * hi;
+    // `FilmKernel::finish`: temperature and tint per tonal band (in stops about middle gray),
+    // then the shoulder.
+    var v = max(scene, vec3<f32>(0.0));
+    let ev = log2(max(lum2020(v), 1e-6) / GREY);
+    let sh = 1.0 - sstep(-3.0, -0.5, ev);
+    let hi = sstep(0.5, 2.5, ev);
+    let mid_w = max(1.0 - sh - hi, 0.0);
+    let balance = vec3<f32>(pf(33u), pf(34u), pf(35u));
+    let band = vec3<f32>(pf(36u), pf(37u), pf(38u)) * sh + vec3<f32>(pf(39u), pf(40u), pf(41u)) * mid_w
+        + vec3<f32>(pf(42u), pf(43u), pf(44u)) * hi;
     v = v * max(balance * band, vec3<f32>(0.0));
+    let shoulder = pf(45u);
     if (shoulder > 1e-4) {
         let e = max(v - vec3<f32>(shoulder), vec3<f32>(0.0));
         let rolled = vec3<f32>(shoulder) + e / (vec3<f32>(1.0) + e / vec3<f32>(shoulder));
         v = select(v, rolled, v > vec3<f32>(shoulder));
     }
-    put_rgb(i, v);
+    put_rgb(i, min(v, vec3<f32>(64.0)));
 }
 
 // Luminance NR: scale by 2^((f − l)·k) (a: image, b: log luminance l, c: filtered f). P[1] = k.

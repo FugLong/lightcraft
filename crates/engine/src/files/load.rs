@@ -9,27 +9,48 @@ use super::*;
 /// instead of each one waking the pool from outside and waiting for it (which costs more than the
 /// loops themselves when the machine is busy).
 pub fn load_bytes(bytes: &[u8], max_edge: usize) -> Result<(Rgb32f, SourceInfo), String> {
-    rayon::scope(|_| load_bytes_now(std::borrow::Cow::Borrowed(bytes), max_edge, None, false).map(|(img, _, info, _)| (img, info)))
+    rayon::scope(|_| load_bytes_now(std::borrow::Cow::Borrowed(bytes), max_edge, None, false, false).map(|(img, _, info, _)| (img, info)))
+}
+
+/// [`load_bytes`] of white-balanced camera RGB, for Negative Craft. A rendered file is unchanged.
+pub fn load_bytes_transmission(bytes: &[u8], max_edge: usize) -> Result<(Rgb32f, SourceInfo), String> {
+    rayon::scope(|_| load_bytes_now(std::borrow::Cow::Borrowed(bytes), max_edge, None, false, true).map(|(img, _, info, _)| (img, info)))
 }
 
 /// [`load_bytes`] taking the file's bytes: a raw file's bytes are freed as soon as it is decoded
 /// (less memory held while it is developed).
 pub fn load_vec(bytes: Vec<u8>, max_edge: usize) -> Result<(Rgb32f, SourceInfo), String> {
-    rayon::scope(move |_| load_bytes_now(std::borrow::Cow::Owned(bytes), max_edge, None, false).map(|(img, _, info, _)| (img, info)))
+    rayon::scope(move |_| load_bytes_now(std::borrow::Cow::Owned(bytes), max_edge, None, false, false).map(|(img, _, info, _)| (img, info)))
+}
+
+/// [`load_vec`] of white-balanced camera RGB, for Negative Craft. A rendered file is unchanged.
+pub fn load_vec_transmission(bytes: Vec<u8>, max_edge: usize) -> Result<(Rgb32f, SourceInfo), String> {
+    rayon::scope(move |_| load_bytes_now(std::borrow::Cow::Owned(bytes), max_edge, None, false, true).map(|(img, _, info, _)| (img, info)))
 }
 
 /// [`load_vec`] for a thumbnail: a DNG that keeps reduced-resolution copies of its raw image (Lightroom's HDR and
 /// panorama merges) develops the smallest that covers `max_edge` instead of the whole image. The flag says whether
 /// it did: such a picture is not the full image, and an export never renders from it.
 pub fn load_vec_reduced(bytes: Vec<u8>, max_edge: usize) -> Result<(Rgb32f, SourceInfo, bool), String> {
-    rayon::scope(move |_| load_bytes_now(std::borrow::Cow::Owned(bytes), max_edge, None, true).map(|(img, _, info, reduced)| (img, info, reduced)))
+    rayon::scope(move |_| {
+        load_bytes_now(std::borrow::Cow::Owned(bytes), max_edge, None, true, false).map(|(img, _, info, reduced)| (img, info, reduced))
+    })
+}
+
+/// [`load_vec_reduced`] of white-balanced camera RGB, for a Negative Craft thumbnail.
+pub fn load_vec_reduced_transmission(bytes: Vec<u8>, max_edge: usize) -> Result<(Rgb32f, SourceInfo, bool), String> {
+    rayon::scope(move |_| {
+        load_bytes_now(std::borrow::Cow::Owned(bytes), max_edge, None, true, true).map(|(img, _, info, reduced)| (img, info, reduced))
+    })
 }
 
 /// [`load_vec`] that also develops the photo's cached denoised picture (`spec`) from the same decode: the plain
 /// picture, the denoised one (`None` when it cannot be read or does not fit this raw: the plain one is then all
 /// there is) and the source facts. Both pictures are the same size.
 pub fn load_vec_pair(bytes: Vec<u8>, max_edge: usize, spec: &DenoiseSpec) -> Result<(Rgb32f, Option<Rgb32f>, SourceInfo), String> {
-    rayon::scope(move |_| load_bytes_now(std::borrow::Cow::Owned(bytes), max_edge, Some(spec), false).map(|(img, twin, info, _)| (img, twin, info)))
+    rayon::scope(move |_| {
+        load_bytes_now(std::borrow::Cow::Owned(bytes), max_edge, Some(spec), false, false).map(|(img, twin, info, _)| (img, twin, info))
+    })
 }
 
 /// The denoised camera RGB of `raw` from its cached product, as the plain development would have it: the default
@@ -59,6 +80,7 @@ fn load_bytes_now(
     max_edge: usize,
     denoise: Option<&DenoiseSpec>,
     allow_reduced: bool,
+    for_film: bool,
 ) -> Result<(Rgb32f, Option<Rgb32f>, SourceInfo, bool), String> {
     if lightcraft_raw::probe(&bytes).is_some() {
         // a thumbnail (`allow_reduced`, never an export) of a DNG that keeps smaller copies of its raw image
@@ -151,7 +173,11 @@ fn load_bytes_now(
                 None => colour.rebuild_highlights(&mut img),
             }
             stages.push(("highlights", t0.elapsed()));
-            colour.apply(&mut img);
+            if for_film {
+                colour.transmission(&mut img)
+            } else {
+                colour.apply(&mut img)
+            }
             stages.push(("colour", t0.elapsed()));
             // a full-size render keeps the picture (fitting it to its own size would copy it, ~390 MB at 33 MP)
             let img = if img.width.max(img.height) > max_edge { fit(&img, max_edge, max_edge, Filter::Box) } else { img };
@@ -202,6 +228,12 @@ fn load_bytes_now(
                 local_tone,
                 // (the catalog knows the original's size: `media::source_info`)
                 native_long: None,
+                transmission: for_film,
+                // The fitted look on the camera matrix. Its rows are scaled so white stays white:
+                // the look's own white shift is what the hue table cancels on a normal photo, and
+                // on a film positive that shift is a cast. The camera matrix alone preserves white
+                // and drops the look's saturation.
+                to_working: for_film.then(|| preserve_white(colour.matrix)),
             },
             used_reduced,
         ));
@@ -211,6 +243,15 @@ fn load_bytes_now(
     let img = d.to_working();
     let img = if img.width.max(img.height) > max_edge { fit(&img, max_edge, max_edge, Filter::Mitchell) } else { img };
     Ok((img.into_oriented(Orientation::from_exif(d.orientation)), None, SourceInfo::default(), false))
+}
+
+/// Scale each row so white camera RGB stays white. A row that does not sum to a real scale is
+/// left alone, rather than flipped or blown up.
+fn preserve_white(m: lightcraft_color::Mat3) -> [[f32; 3]; 3] {
+    m.to_f32().map(|row| {
+        let s = row[0] + row[1] + row[2];
+        if s.is_finite() && s > 1e-3 { row.map(|v| v / s) } else { row }
+    })
 }
 
 /// Which white-balance scale a raw is edited on, decided from the file alone, the way the catalog decides it from
@@ -347,4 +388,24 @@ pub(crate) fn dng_tone_curve(curve: &lightcraft_raw::profile::ToneCurve) -> Opti
         [x, curve.eval(x).min(0.9995)]
     });
     lightcraft_pipeline::tone::CameraTone::new(knots)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::preserve_white;
+
+    #[test]
+    fn a_look_that_shifts_white_keeps_white_and_its_saturation() {
+        // A fitted look: negative off-diagonals are the saturation, and the rows do not sum to 1.
+        let m = lightcraft_color::Mat3([[1.19, -0.91, 0.43], [-0.27, 1.54, -0.17], [-0.23, 0.24, 1.12]]);
+        let w = preserve_white(m);
+        let apply = |p: [f32; 3]| [0, 1, 2].map(|i| w[i][0] * p[0] + w[i][1] * p[1] + w[i][2] * p[2]);
+        let white = apply([1.0; 3]);
+        for c in white {
+            assert!((c - 1.0).abs() < 1e-4, "{white:?}");
+        }
+        let red = apply([1.0, 0.2, 0.2]);
+        let spread = red[0].max(red[1]).max(red[2]) - red[0].min(red[1]).min(red[2]);
+        assert!(spread > 0.5, "the look's saturation should survive {red:?}");
+    }
 }

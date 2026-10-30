@@ -1,4 +1,4 @@
-use super::load::{load_vec, load_vec_pair, load_vec_reduced};
+use super::load::{load_vec, load_vec_pair, load_vec_reduced, load_vec_reduced_transmission, load_vec_transmission};
 use super::preview::{fit_box, fs_preview_loader, preview_orientation};
 use super::probe::probe_bytes;
 use super::*;
@@ -91,6 +91,16 @@ pub fn fs_reduced_loader() -> ReducedLoader {
     Arc::new(|path: &str, max_edge: usize| fs_load(path, max_edge, |bytes| load_vec_reduced(bytes, max_edge)))
 }
 
+/// The filesystem loader for Negative Craft: white-balanced camera RGB, before the colour matrix.
+pub fn fs_film_loader() -> FileLoader {
+    Arc::new(|path: &str, max_edge: usize| fs_load(path, max_edge, |bytes| load_vec_transmission(bytes, max_edge)))
+}
+
+/// [`fs_reduced_loader`] for a Negative Craft thumbnail.
+pub fn fs_film_reduced_loader() -> ReducedLoader {
+    Arc::new(|path: &str, max_edge: usize| fs_load(path, max_edge, |bytes| load_vec_reduced_transmission(bytes, max_edge)))
+}
+
 /// Read `path` and `load` it, waiting on [`crate::memory::work_gate`] as [`fs_hooks`] explains.
 fn fs_load<T>(path: &str, max_edge: usize, load: impl FnOnce(Vec<u8>) -> Result<T, String>) -> Result<T, String> {
     let len = std::fs::metadata(path).map(|m| usize::try_from(m.len()).unwrap_or(usize::MAX)).unwrap_or(0);
@@ -119,6 +129,8 @@ impl crate::Session {
         let (l, p) = fs_hooks();
         self.media.file_loader = Some(l);
         self.media.reduced_loader = Some(fs_reduced_loader());
+        self.media.film_loader = Some(fs_film_loader());
+        self.media.film_reduced_loader = Some(fs_film_reduced_loader());
         self.media.file_probe = Some(p);
         self.media.preview_loader = Some(fs_preview_loader());
         self.media.denoise.loader = Some(fs_pair_loader());

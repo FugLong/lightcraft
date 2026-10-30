@@ -287,8 +287,7 @@ pub fn builtin() -> Vec<Preset> {
             "Negative Craft",
             "nc-warm",
             "Warm",
-            // Saturation is applied to the scan, before a negative inverts, so a positive presat
-            // cools the print. Positive tint removes green, which with warmth goes purple.
+            // Positive tint removes green, which with warmth goes purple.
             json!({"film": {"black": 0.0, "shoulder": 0.0, "presat": 0.0, "temp": 20.0, "tint": 0.0, "shadow_temp": 6.0, "shadow_tint": 0.0, "mid_temp": 0.0, "mid_tint": 0.0, "high_temp": 8.0, "high_tint": 0.0}}),
         ),
         p(
